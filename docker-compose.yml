@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: course_builder_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: course_builder
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  backend:
+    image: node:20-alpine
+    container_name: course_builder_backend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/course_builder
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+
+  frontend:
+    image: node:20-alpine
+    container_name: course_builder_frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    environment:
+      NODE_ENV: development
+      PUBLIC_BACKEND_URL: http://localhost:3001
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
