@@ -7,11 +7,13 @@ export type CourseStoreState = {
   selectedLessonId: string | null;
 };
 
-const initialState: CourseStoreState = {
-  course: null,
-  selectedModuleId: null,
-  selectedLessonId: null,
-};
+function createInitialState(): CourseStoreState {
+  return {
+    course: null,
+    selectedModuleId: null,
+    selectedLessonId: null,
+  };
+}
 
 function createModule(title: string, position: number): Module {
   return {
@@ -31,21 +33,23 @@ function createLesson(title: string, position: number): Lesson {
 }
 
 function createCourseStore() {
-  const { subscribe, update, set } = writable(initialState);
+  const { subscribe, update, set } = writable(createInitialState());
 
   return {
     subscribe,
     reset() {
-      set(initialState);
+      set(createInitialState());
     },
-    setCourse(course: CourseSummary) {
+    setCourse(course: Course | CourseSummary) {
+      const modules = 'modules' in course ? course.modules : [];
+
       set({
         course: {
           ...course,
-          modules: [],
+          modules,
         },
-        selectedLessonId: null,
-        selectedModuleId: null,
+        selectedModuleId: modules.at(0)?.moduleId ?? null,
+        selectedLessonId: modules.at(0)?.lessons.at(0)?.lessonId ?? null,
       });
     },
     addModule(title: string) {
