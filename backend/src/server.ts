@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import dotenv from 'dotenv';
+import cors from 'cors';
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 
@@ -21,6 +22,29 @@ if (databaseUrl) {
 }
 
 const app = express();
+
+const corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
+  })
+);
 app.use(express.json());
 
 app.get('/health', async (_req: Request, res: Response) => {
