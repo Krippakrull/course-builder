@@ -17,3 +17,11 @@
 - Aktiverade CORS-stöd i backend med konfigurerbara tillåtna ursprung för att möjliggöra kommunikation mellan frontend och API i utvecklingsmiljö.
 
 **Nästa steg:** Konfigurera `CORS_ORIGINS` för relevanta miljöer och knyta modul- och lektionshanteringen till backend (CRUD-endpoints + persistens) samt utöka outline-komponenten med ordning/drag-dropp enligt US-M1-02.
+
+## 2025-09-21
+
+- La till miljövariabeln `CORS_ORIGINS` i backend (kod, `docker-compose` och `.env.example`) och dokumenterade hur den ska sättas.
+- Utökade backend med databastabeller för moduler och lektioner samt endpoints för att skapa dem med positionshantering och uppdatering av kursens tidsstämplar.
+- Kopplade frontendens modul- och lektionsformulär till backend, visade laddningsstatus och felmeddelanden samt sorterade lokala stores efter position.
+
+**Nästa steg:** Implementera `GET /courses/:id` som returnerar kurs med moduler/lektioner och ladda kursstrukturen från backend vid initiering. Förbered därefter stöd för omordning (drag & drop) och borttagning enligt US-M1-02.

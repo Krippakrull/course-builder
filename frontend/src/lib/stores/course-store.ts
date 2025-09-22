@@ -15,21 +15,17 @@ function createInitialState(): CourseStoreState {
   };
 }
 
-function createModule(title: string, position: number): Module {
-  return {
-    moduleId: crypto.randomUUID(),
-    title,
-    position,
-    lessons: [],
-  };
+function sortLessons(lessons: Lesson[]): Lesson[] {
+  return [...lessons].sort((a, b) => a.position - b.position);
 }
 
-function createLesson(title: string, position: number): Lesson {
-  return {
-    lessonId: crypto.randomUUID(),
-    title,
-    position,
-  };
+function sortModules(modules: Module[]): Module[] {
+  return [...modules]
+    .map((module) => ({
+      ...module,
+      lessons: sortLessons(module.lessons ?? []),
+    }))
+    .sort((a, b) => a.position - b.position);
 }
 
 function createCourseStore() {
@@ -41,7 +37,7 @@ function createCourseStore() {
       set(createInitialState());
     },
     setCourse(course: Course | CourseSummary) {
-      const modules = 'modules' in course ? course.modules : [];
+      const modules = 'modules' in course ? sortModules(course.modules ?? []) : [];
 
       set({
         course: {
@@ -52,25 +48,29 @@ function createCourseStore() {
         selectedLessonId: modules.at(0)?.lessons.at(0)?.lessonId ?? null,
       });
     },
-    addModule(title: string) {
+    addModule(module: Module) {
       update((state) => {
         if (!state.course) {
           return state;
         }
 
-        const module = createModule(title, state.course.modules.length);
+        const modules = sortModules([
+          ...state.course.modules.filter((item) => item.moduleId !== module.moduleId),
+          { ...module, lessons: sortLessons(module.lessons ?? []) },
+        ]);
+
         return {
           ...state,
           course: {
             ...state.course,
-            modules: [...state.course.modules, module],
+            modules,
           },
           selectedModuleId: module.moduleId,
-          selectedLessonId: null,
+          selectedLessonId: module.lessons.at(0)?.lessonId ?? null,
         };
       });
     },
-    addLesson(moduleId: string, title: string) {
+    addLesson(moduleId: string, lesson: Lesson) {
       update((state) => {
         if (!state.course) {
           return state;
@@ -81,15 +81,19 @@ function createCourseStore() {
             return module;
           }
 
-          const lesson = createLesson(title, module.lessons.length);
           return {
             ...module,
-            lessons: [...module.lessons, lesson],
+            lessons: sortLessons([
+              ...module.lessons.filter((item) => item.lessonId !== lesson.lessonId),
+              lesson,
+            ]),
           };
         });
 
         const selectedModule = modules.find((module) => module.moduleId === moduleId);
-        const selectedLessonId = selectedModule?.lessons.at(-1)?.lessonId ?? null;
+        const selectedLessonId = selectedModule?.lessons.find(
+          (item) => item.lessonId === lesson.lessonId
+        )?.lessonId ?? null;
 
         return {
           ...state,
