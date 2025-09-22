@@ -1,6 +1,9 @@
+<svelte:options runes={true} />
+
 <script lang="ts">
   import { env } from '$env/dynamic/public';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { courseStore } from '$lib';
   import type {
     Course,
@@ -18,49 +21,118 @@
     language: string;
   };
 
+  type CreateCourseErrors = { title?: string; language?: string; general?: string };
+  type LessonErrorMap = Record<string, string | undefined>;
+  type PendingMap = Record<string, boolean | undefined>;
+  type LessonSavingMap = Record<string, number | undefined>;
+
   const languageOptions = [
     { value: 'sv', label: 'Svenska' },
     { value: 'en', label: 'English' },
   ];
 
-  let backendStatus: 'idle' | 'loading' | 'success' | 'error' = 'idle';
-  let backendMessage = '';
+  let backendStatus = $state<'idle' | 'loading' | 'success' | 'error'>('idle');
+  let backendMessage = $state('');
 
-  let showCreateCourseDialog = false;
-  let createCourseForm: CreateCourseForm = { title: '', language: 'sv' };
-  let createCourseErrors: { title?: string; language?: string; general?: string } = {};
-  let isCreatingCourse = false;
+  let showCreateCourseDialog = $state(false);
+  let createCourseForm = $state<CreateCourseForm>({ title: '', language: 'sv' });
+  let createCourseErrors = $state<CreateCourseErrors>({});
+  let isCreatingCourse = $state(false);
 
-  let newModuleTitle = '';
-  let lessonDrafts: Record<string, string> = {};
-  let lessonErrors: Record<string, string | undefined> = {};
-  let lessonPending: Record<string, boolean | undefined> = {};
+  let newModuleTitle = $state('');
+  let lessonDrafts = $state<Record<string, string>>({});
+  let lessonErrors = $state<LessonErrorMap>({});
+  let lessonPending = $state<PendingMap>({});
 
-  let courseState: CourseStoreState;
-  $: courseState = $courseStore;
-  $: currentCourse = courseState.course;
-  $: selectedModule =
-    currentCourse?.modules.find((module) => module.moduleId === courseState.selectedModuleId) ??
-    null;
-  $: selectedLesson =
-    selectedModule?.lessons.find((lesson) => lesson.lessonId === courseState.selectedLessonId) ??
-    null;
+  let courseState = $state<CourseStoreState>(get(courseStore));
+  let currentCourse = $state<Course | null>(null);
+  let selectedModule = $state<Module | null>(null);
+  let selectedLesson = $state<Lesson | null>(null);
 
-  let moduleError: string | null = null;
-  let isCreatingModule = false;
-  let isLoadingCourse = false;
-  let initialLoadError: string | null = null;
-  let moduleOrderSaving = false;
-  let moduleOrderSavingCount = 0;
-  let moduleDeletePending: Record<string, boolean | undefined> = {};
-  let lessonDeletePending: Record<string, boolean | undefined> = {};
-  let lessonOrderSaving: Record<string, number | undefined> = {};
-  let draggingModuleId: string | null = null;
-  let moduleDragOverId: string | null = null;
-  let draggingLesson: { moduleId: string; lessonId: string } | null = null;
-  let lessonDragOver: { moduleId: string; lessonId: string | null } | null = null;
+  let moduleError = $state<string | null>(null);
+  let isCreatingModule = $state(false);
+  let isLoadingCourse = $state(false);
+  let initialLoadError = $state<string | null>(null);
+  let moduleOrderSavingCount = $state(0);
+  let moduleOrderSaving = $state(false);
+  let moduleDeletePending = $state<PendingMap>({});
+  let lessonDeletePending = $state<PendingMap>({});
+  let lessonOrderSaving = $state<LessonSavingMap>({});
+  let draggingModuleId = $state<string | null>(null);
+  let moduleDragOverId = $state<string | null>(null);
+  let draggingLesson = $state<{ moduleId: string; lessonId: string } | null>(null);
+  let lessonDragOver = $state<{ moduleId: string; lessonId: string | null } | null>(null);
 
-  $: moduleOrderSaving = moduleOrderSavingCount > 0;
+  $effect(() => {
+    currentCourse = courseState.course;
+    const moduleId = courseState.selectedModuleId;
+    const resolvedModule =
+      moduleId && currentCourse
+        ? currentCourse.modules.find((item) => item.moduleId === moduleId) ?? null
+        : null;
+    selectedModule = resolvedModule;
+
+    const lessonId = courseState.selectedLessonId;
+    selectedLesson =
+      lessonId && resolvedModule
+        ? resolvedModule.lessons.find((lesson) => lesson.lessonId === lessonId) ?? null
+        : null;
+  });
+
+  $effect(() => {
+    moduleOrderSaving = moduleOrderSavingCount > 0;
+  });
+
+  onMount(() => {
+    let active = true;
+    const unsubscribe = courseStore.subscribe((value) => {
+      if (active) {
+        courseState = value;
+      }
+    });
+
+    (async () => {
+      backendStatus = 'loading';
+
+      try {
+        const response = await fetch(`${backendUrl}/health`);
+        const data = (await response.json().catch(() => null)) as
+          | { status?: string; database?: string; timestamp?: string }
+          | null;
+
+        if (!response.ok) {
+          throw new Error(`Backend svarade med status ${response.status}`);
+        }
+
+        if (!active) {
+          return;
+        }
+
+        backendStatus = 'success';
+        backendMessage =
+          data?.database === 'connected'
+            ? 'Backend ansluten och databas kontaktbar.'
+            : 'Backend svarade.';
+
+        const storedCourseId = getStoredCourseId();
+        if (storedCourseId) {
+          await loadCourseFromBackend(storedCourseId);
+        }
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+
+        backendStatus = 'error';
+        backendMessage = (error as Error).message;
+      }
+    })();
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  });
 
   async function loadCourseFromBackend(courseId: string) {
     isLoadingCourse = true;
@@ -94,7 +166,6 @@
       moduleError = null;
       initialLoadError = null;
       moduleOrderSavingCount = 0;
-      moduleOrderSaving = false;
       moduleDeletePending = {};
       lessonDeletePending = {};
       lessonOrderSaving = {};
@@ -111,37 +182,6 @@
 
     return true;
   }
-
-  onMount(() => {
-    void (async () => {
-      backendStatus = 'loading';
-
-      try {
-        const response = await fetch(`${backendUrl}/health`);
-        const data = (await response.json().catch(() => null)) as
-          | { status?: string; database?: string; timestamp?: string }
-          | null;
-
-        if (!response.ok) {
-          throw new Error(`Backend svarade med status ${response.status}`);
-        }
-
-        backendStatus = 'success';
-        backendMessage =
-          data?.database === 'connected'
-            ? 'Backend ansluten och databas kontaktbar.'
-            : 'Backend svarade.';
-
-        const storedCourseId = getStoredCourseId();
-        if (storedCourseId) {
-          await loadCourseFromBackend(storedCourseId);
-        }
-      } catch (error) {
-        backendStatus = 'error';
-        backendMessage = (error as Error).message;
-      }
-    })();
-  });
 
   function openCreateCourseDialog() {
     createCourseForm = { title: '', language: 'sv' };
@@ -163,7 +203,7 @@
   }
 
   function validateCreateCourseForm() {
-    const errors: typeof createCourseErrors = {};
+    const errors: CreateCourseErrors = {};
 
     if (!createCourseForm.title.trim()) {
       errors.title = 'Ange en titel.';
@@ -256,14 +296,12 @@
     return fallback;
   }
 
-  // Helper: Ensure payload is a non-null object
   function assertObject(payload: unknown, context: string) {
     if (!payload || typeof payload !== 'object') {
       throw new Error(`Oväntat svar för ${context}.`);
     }
   }
 
-  // Helper: Validate required string fields
   function assertStringFields(obj: Record<string, unknown>, fields: string[], context: string) {
     for (const field of fields) {
       if (typeof obj[field] !== 'string') {
@@ -272,7 +310,6 @@
     }
   }
 
-  // Helper: Parse and validate numeric field
   function parseNumericField(value: unknown, fieldName: string, context: string): number {
     const num = Number(value);
     if (!Number.isFinite(num)) {
@@ -531,15 +568,9 @@
       return;
     }
 
-    if (targetModuleId === draggingModuleId) {
-      draggingModuleId = null;
-      moduleDragOverId = null;
-      return;
-    }
-
     event.preventDefault();
 
-    const modules = currentCourse.modules ?? [];
+    const modules = currentCourse.modules;
     const fromIndex = modules.findIndex((module) => module.moduleId === draggingModuleId);
     if (fromIndex === -1) {
       draggingModuleId = null;
@@ -615,54 +646,6 @@
     } finally {
       const { [moduleId]: _removed, ...rest } = moduleDeletePending;
       moduleDeletePending = rest;
-    }
-  }
-
-  async function persistLessonOrder(moduleId: string, lessonIds: string[]) {
-    if (!currentCourse) {
-      return;
-    }
-
-    const currentCount = lessonOrderSaving[moduleId] ?? 0;
-    lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: currentCount + 1 };
-    lessonErrors = { ...lessonErrors, [moduleId]: undefined };
-
-    try {
-      const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons/order`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ lessonIds }),
-      });
-
-      const text = await response.text();
-      const payload = text ? (JSON.parse(text) as unknown) : null;
-
-      if (!response.ok) {
-        const message = extractErrorMessage(
-          payload,
-          `Kunde inte spara lektionsordning (status ${response.status}).`
-        );
-        throw new Error(message);
-      }
-
-      lessonErrors = { ...lessonErrors, [moduleId]: undefined };
-    } catch (error) {
-      lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
-      if (currentCourse) {
-        await loadCourseFromBackend(currentCourse.courseId);
-      }
-    } finally {
-      const currentValue = lessonOrderSaving[moduleId] ?? 1;
-      const nextValue = currentValue - 1;
-
-      if (nextValue > 0) {
-        lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: nextValue };
-      } else {
-        const { [moduleId]: _removed, ...rest } = lessonOrderSaving;
-        lessonOrderSaving = rest;
-      }
     }
   }
 
@@ -800,13 +783,61 @@
   function handleModuleDraftChange(moduleId: string, value: string) {
     lessonDrafts = { ...lessonDrafts, [moduleId]: value };
   }
+
+  async function persistLessonOrder(moduleId: string, lessonIds: string[]) {
+    if (!currentCourse) {
+      return;
+    }
+
+    const currentCount = lessonOrderSaving[moduleId] ?? 0;
+    lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: currentCount + 1 };
+    lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+
+    try {
+      const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons/order`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ lessonIds }),
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte spara lektionsordning (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+
+      lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+    } catch (error) {
+      lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
+      if (currentCourse) {
+        await loadCourseFromBackend(currentCourse.courseId);
+      }
+    } finally {
+      const currentValue = lessonOrderSaving[moduleId] ?? 1;
+      const nextValue = Math.max(0, currentValue - 1);
+      if (nextValue > 0) {
+        lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: nextValue };
+      } else {
+        const { [moduleId]: _removed, ...rest } = lessonOrderSaving;
+        lessonOrderSaving = rest;
+      }
+    }
+  }
 </script>
+
 
 <svelte:head>
   <title>Course Builder</title>
 </svelte:head>
 
-<svelte:window on:keydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <main>
   <header class="page-header">
@@ -816,7 +847,7 @@
     </div>
 
     <div class="header-actions">
-      <button class="primary" type="button" on:click={openCreateCourseDialog}>
+      <button class="primary" type="button" onclick={openCreateCourseDialog}>
         Ny kurs
       </button>
       <div class="backend-status" data-status={backendStatus}>
@@ -867,10 +898,10 @@
                 moduleDragOverId === module.moduleId && draggingModuleId !== module.moduleId
               }
               draggable="true"
-              on:dragstart={(event) => handleModuleDragStart(event, module.moduleId)}
-              on:dragover={(event) => handleModuleDragOver(event, module.moduleId)}
-              on:drop={(event) => handleModuleDrop(event, module.moduleId)}
-              on:dragend={handleModuleDragEnd}
+              ondragstart={(event) => handleModuleDragStart(event, module.moduleId)}
+              ondragover={(event) => handleModuleDragOver(event, module.moduleId)}
+              ondrop={(event) => handleModuleDrop(event, module.moduleId)}
+              ondragend={handleModuleDragEnd}
               role="listitem"
             >
               <header>
@@ -878,7 +909,7 @@
                   <button
                     type="button"
                     class="module-trigger"
-                    on:click={() => courseStore.selectModule(module.moduleId)}
+                    onclick={() => courseStore.selectModule(module.moduleId)}
                   >
                     <span class="drag-hint" aria-hidden="true">↕︎</span>
                     <span class="module-trigger-text">
@@ -890,7 +921,10 @@
                     <button
                       type="button"
                       class="icon-button danger"
-                      on:click|stopPropagation={() => handleDeleteModule(module.moduleId)}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteModule(module.moduleId);
+                      }}
                       disabled={Boolean(moduleDeletePending[module.moduleId])}
                       aria-label={`Ta bort ${module.title}`}
                     >
@@ -915,12 +949,12 @@
                           draggingLesson?.lessonId !== lesson.lessonId
                         }
                         draggable="true"
-                        on:dragstart={(event) =>
+                        ondragstart={(event) =>
                           handleLessonDragStart(event, module.moduleId, lesson.lessonId)}
-                        on:dragover={(event) =>
+                        ondragover={(event) =>
                           handleLessonDragOver(event, module.moduleId, lesson.lessonId)}
-                        on:drop={(event) => handleLessonDrop(event, module.moduleId, lesson.lessonId)}
-                        on:dragend={handleLessonDragEnd}
+                        ondrop={(event) => handleLessonDrop(event, module.moduleId, lesson.lessonId)}
+                        ondragend={handleLessonDragEnd}
                       >
                         <div class="lesson-row">
                           <button
@@ -930,7 +964,7 @@
                               lesson.lessonId === courseState.selectedLessonId &&
                               module.moduleId === courseState.selectedModuleId
                             }
-                            on:click={() => courseStore.selectLesson(module.moduleId, lesson.lessonId)}
+                            onclick={() => courseStore.selectLesson(module.moduleId, lesson.lessonId)}
                           >
                             <span class="lesson-index">Lektion {lessonIndex + 1}</span>
                             <span class="lesson-title">{lesson.title}</span>
@@ -938,8 +972,10 @@
                           <button
                             type="button"
                             class="icon-button danger"
-                            on:click|stopPropagation={() =>
-                              handleDeleteLesson(module.moduleId, lesson.lessonId)}
+                            onclick={(event) => {
+                              event.stopPropagation();
+                              void handleDeleteLesson(module.moduleId, lesson.lessonId);
+                            }}
                             disabled={Boolean(lessonDeletePending[lesson.lessonId])}
                             aria-label={`Ta bort ${lesson.title}`}
                           >
@@ -951,8 +987,8 @@
                     {#if draggingLesson && draggingLesson.moduleId === module.moduleId}
                       <li
                         class="lesson-drop-zone"
-                        on:dragover={(event) => handleLessonDropZoneDragOver(event, module.moduleId)}
-                        on:drop={(event) => handleLessonDrop(event, module.moduleId, null)}
+                        ondragover={(event) => handleLessonDropZoneDragOver(event, module.moduleId)}
+                        ondrop={(event) => handleLessonDrop(event, module.moduleId, null)}
                       >
                         Släpp här för att placera sist
                       </li>
@@ -962,7 +998,10 @@
 
                 <form
                   class="lesson-form"
-                  on:submit|preventDefault={() => handleAddLesson(module.moduleId)}
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    handleAddLesson(module.moduleId);
+                  }}
                 >
                   <label class="sr-only" for={`lesson-${module.moduleId}`}>
                     Lektionstitel för {module.title}
@@ -973,7 +1012,7 @@
                     type="text"
                     placeholder="Lägg till lektion"
                     value={lessonDrafts[module.moduleId] ?? ''}
-                    on:input={(event) =>
+                    oninput={(event) =>
                       handleModuleDraftChange(module.moduleId, (event.target as HTMLInputElement).value)}
                     disabled={Boolean(lessonPending[module.moduleId])}
                   />
@@ -994,8 +1033,8 @@
           {#if draggingModuleId}
             <div
               class="module-drop-zone"
-              on:dragover={handleModuleDropZoneDragOver}
-              on:drop={(event) => handleModuleDrop(event, null)}
+              ondragover={handleModuleDropZoneDragOver}
+              ondrop={(event) => handleModuleDrop(event, null)}
               role="button"
               aria-label="Släpp för att placera modulen sist"
               tabindex="0"
@@ -1009,7 +1048,13 @@
           <p class="module-status">Sparar modulordning…</p>
         {/if}
 
-        <form class="module-form" on:submit|preventDefault={handleAddModule}>
+        <form
+          class="module-form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            handleAddModule();
+          }}
+        >
           <label class="sr-only" for="module-title">Modulstitel</label>
           <input
             id="module-title"
@@ -1060,7 +1105,7 @@
         Starta genom att skapa en kurs. När kursen har skapats kan du lägga till moduler och lektioner i
         kursstrukturen.
       </p>
-      <button class="primary" type="button" on:click={openCreateCourseDialog}>
+      <button class="primary" type="button" onclick={openCreateCourseDialog}>
         Starta ny kurs
       </button>
     </section>
@@ -1069,9 +1114,9 @@
 
 {#if showCreateCourseDialog}
   <div class="modal-root">
-    <div class="modal-scrim" aria-hidden="true" on:click={closeCreateCourseDialog}></div>
+    <div class="modal-scrim" aria-hidden="true" onclick={closeCreateCourseDialog}></div>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-course-title">
-      <form class="modal-content" on:submit={handleCreateCourseSubmit}>
+      <form class="modal-content" onsubmit={handleCreateCourseSubmit}>
         <div class="modal-header">
           <h2 id="create-course-title">Ny kurs</h2>
         </div>
@@ -1113,7 +1158,7 @@
         </div>
 
         <div class="modal-footer">
-          <button type="button" class="ghost" on:click={closeCreateCourseDialog} disabled={isCreatingCourse}>
+          <button type="button" class="ghost" onclick={closeCreateCourseDialog} disabled={isCreatingCourse}>
             Avbryt
           </button>
           <button type="submit" class="primary" disabled={isCreatingCourse}>
