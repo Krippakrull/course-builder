@@ -9,4 +9,10 @@
 - La till `.gitignore` och dokumenterade förändringar i denna fil.
 - Implementerade `POST /courses` i backend som skapar kurs med UUID, validerar indata och säkerställer kurs-tabellen i Postgres.
 
-**Nästa steg:** Bygga frontendflödet för att skapa en kurs (dialog + state-initiering enligt US-M1-01) och börja modellera modul- och lektionsstruktur (US-M1-02).
+## 2025-09-20
+
+- Byggde kursflöde i frontend med modal för att skapa kurser mot `POST /courses`, lokal kursstore och outline för moduler och lektioner.
+- Lade till möjlighet att skapa moduler och lektioner i UI samt visning av vald modul/lektion som grund för blockredigeraren.
+- Förbättrade kursstoren genom att nollställa till nytt tillstånd, stödja existerande moduler vid `setCourse` och automatiskt välja första modul/lektion om de finns.
+
+**Nästa steg:** Knyta modul- och lektionshanteringen till backend (CRUD-endpoints + persistens) och utöka outline-komponenten med ordning/drag-dropp enligt US-M1-02.
