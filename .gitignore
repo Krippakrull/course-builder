@@ -17,6 +17,9 @@ yarn-error.log*
 # Environment files
 .env
 .env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 backend/.env
 frontend/.env
 

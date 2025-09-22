@@ -1,7 +1,13 @@
 <script lang="ts">
   import { env } from '$env/dynamic/public';
   import { onMount } from 'svelte';
-  import { courseStore, type CourseStoreState, type CourseSummary } from '$lib';
+  import { courseStore } from '$lib';
+  import type {
+    CourseStoreState,
+    CourseSummary,
+    Module,
+    Lesson,
+  } from '$lib';
 
   const backendUrl = env.PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
@@ -25,6 +31,8 @@
 
   let newModuleTitle = '';
   let lessonDrafts: Record<string, string> = {};
+  let lessonErrors: Record<string, string | undefined> = {};
+  let lessonPending: Record<string, boolean | undefined> = {};
 
   let courseState: CourseStoreState;
   $: courseState = $courseStore;
@@ -35,6 +43,9 @@
   $: selectedLesson =
     selectedModule?.lessons.find((lesson) => lesson.lessonId === courseState.selectedLessonId) ??
     null;
+
+  let moduleError: string | null = null;
+  let isCreatingModule = false;
 
   onMount(async () => {
     backendStatus = 'loading';
@@ -114,6 +125,57 @@
     return { courseId, title, language, createdAt, updatedAt };
   }
 
+  function parseLessonPayload(payload: unknown, context = 'lesson'): Lesson {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error(`Oväntat svar för ${context}.`);
+    }
+
+    const { lessonId, title, position } = payload as Record<string, unknown>;
+
+    if (typeof lessonId !== 'string' || typeof title !== 'string') {
+      throw new Error(`Svar saknar förväntade fält för ${context}.`);
+    }
+
+    const numericPosition = Number(position);
+    if (!Number.isFinite(numericPosition)) {
+      throw new Error(`Position för ${context} är ogiltig.`);
+    }
+
+    return {
+      lessonId,
+      title,
+      position: numericPosition,
+    };
+  }
+
+  function parseModulePayload(payload: unknown): Module {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Oväntat svar för modul.');
+    }
+
+    const { moduleId, title, position, lessons } = payload as Record<string, unknown>;
+
+    if (typeof moduleId !== 'string' || typeof title !== 'string') {
+      throw new Error('Svar saknar förväntade fält för modul.');
+    }
+
+    const numericPosition = Number(position);
+    if (!Number.isFinite(numericPosition)) {
+      throw new Error('Position för modul är ogiltig.');
+    }
+
+    const parsedLessons = Array.isArray(lessons)
+      ? lessons.map((lesson, index) => parseLessonPayload(lesson, `lesson ${index + 1}`))
+      : [];
+
+    return {
+      moduleId,
+      title,
+      position: numericPosition,
+      lessons: parsedLessons,
+    };
+  }
+
   async function handleCreateCourseSubmit(event: SubmitEvent) {
     event.preventDefault();
 
@@ -176,22 +238,84 @@
 
   function handleAddModule() {
     const title = newModuleTitle.trim();
-    if (!title) {
+    if (!title || !currentCourse || isCreatingModule) {
       return;
     }
 
-    courseStore.addModule(title);
-    newModuleTitle = '';
+    void (async () => {
+      isCreatingModule = true;
+      moduleError = null;
+
+      try {
+        const response = await fetch(`${backendUrl}/courses/${currentCourse.courseId}/modules`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ title }),
+        });
+
+        const text = await response.text();
+        const payload = text ? (JSON.parse(text) as unknown) : null;
+
+        if (!response.ok) {
+          const message =
+            payload && typeof payload === 'object' && 'message' in payload
+              ? String((payload as { message?: unknown }).message ?? 'Kunde inte skapa modul.')
+              : `Kunde inte skapa modul (status ${response.status}).`;
+          throw new Error(message);
+        }
+
+        const module = parseModulePayload(payload);
+        courseStore.addModule(module);
+        newModuleTitle = '';
+      } catch (error) {
+        moduleError = (error as Error).message;
+      } finally {
+        isCreatingModule = false;
+      }
+    })();
   }
 
   function handleAddLesson(moduleId: string) {
     const title = (lessonDrafts[moduleId] ?? '').trim();
-    if (!title) {
+    if (!title || lessonPending[moduleId]) {
       return;
     }
 
-    courseStore.addLesson(moduleId, title);
-    lessonDrafts = { ...lessonDrafts, [moduleId]: '' };
+    void (async () => {
+      lessonPending = { ...lessonPending, [moduleId]: true };
+      lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+
+      try {
+        const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ title }),
+        });
+
+        const text = await response.text();
+        const payload = text ? (JSON.parse(text) as unknown) : null;
+
+        if (!response.ok) {
+          const message =
+            payload && typeof payload === 'object' && 'message' in payload
+              ? String((payload as { message?: unknown }).message ?? 'Kunde inte skapa lektion.')
+              : `Kunde inte skapa lektion (status ${response.status}).`;
+          throw new Error(message);
+        }
+
+        const lesson = parseLessonPayload(payload);
+        courseStore.addLesson(moduleId, lesson);
+        lessonDrafts = { ...lessonDrafts, [moduleId]: '' };
+      } catch (error) {
+        lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
+      } finally {
+        lessonPending = { ...lessonPending, [moduleId]: false };
+      }
+    })();
   }
 
   function handleModuleDraftChange(moduleId: string, value: string) {
@@ -298,8 +422,14 @@
                     value={lessonDrafts[module.moduleId] ?? ''}
                     on:input={(event) =>
                       handleModuleDraftChange(module.moduleId, (event.target as HTMLInputElement).value)}
+                    disabled={Boolean(lessonPending[module.moduleId])}
                   />
-                  <button type="submit">Spara</button>
+                  <button type="submit" disabled={Boolean(lessonPending[module.moduleId])}>
+                    {lessonPending[module.moduleId] ? 'Sparar…' : 'Spara'}
+                  </button>
+                  {#if lessonErrors[module.moduleId]}
+                    <p class="form-error">{lessonErrors[module.moduleId]}</p>
+                  {/if}
                 </form>
               </div>
             </section>
@@ -314,8 +444,14 @@
             type="text"
             placeholder="Lägg till modul"
             bind:value={newModuleTitle}
+            disabled={isCreatingModule}
           />
-          <button type="submit">Lägg till modul</button>
+          <button type="submit" disabled={isCreatingModule}>
+            {isCreatingModule ? 'Lägger till…' : 'Lägg till modul'}
+          </button>
+          {#if moduleError}
+            <p class="form-error">{moduleError}</p>
+          {/if}
         </form>
       </aside>
 
@@ -800,6 +936,12 @@
     margin: -0.35rem 0 0;
     font-size: 0.8rem;
     color: #b91c1c;
+  }
+
+  .form-error {
+    margin: 0.5rem 0 0;
+    color: #b91c1c;
+    font-size: 0.9rem;
   }
 
   input.error,

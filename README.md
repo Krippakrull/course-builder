@@ -20,6 +20,8 @@ Reposkelett för ett projekt med SvelteKit-frontend, Node.js-backend och Postgre
    cp backend/.env.example backend/.env
    cp frontend/.env.example frontend/.env
    ```
+   Uppdatera vid behov `CORS_ORIGINS` i `backend/.env` så att den listar alla frontend-ursprung som ska få
+   anropa API:t (komma-separerad lista, till exempel `http://localhost:5173,http://127.0.0.1:5173`).
 3. Starta hela stacken:
    ```bash
    docker compose up --build
