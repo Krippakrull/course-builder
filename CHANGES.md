@@ -14,5 +14,6 @@
 - Byggde kursflöde i frontend med modal för att skapa kurser mot `POST /courses`, lokal kursstore och outline för moduler och lektioner.
 - Lade till möjlighet att skapa moduler och lektioner i UI samt visning av vald modul/lektion som grund för blockredigeraren.
 - Förbättrade kursstoren genom att nollställa till nytt tillstånd, stödja existerande moduler vid `setCourse` och automatiskt välja första modul/lektion om de finns.
+- Aktiverade CORS-stöd i backend med konfigurerbara tillåtna ursprung för att möjliggöra kommunikation mellan frontend och API i utvecklingsmiljö.
 
-**Nästa steg:** Knyta modul- och lektionshanteringen till backend (CRUD-endpoints + persistens) och utöka outline-komponenten med ordning/drag-dropp enligt US-M1-02.
+**Nästa steg:** Konfigurera `CORS_ORIGINS` för relevanta miljöer och knyta modul- och lektionshanteringen till backend (CRUD-endpoints + persistens) samt utöka outline-komponenten med ordning/drag-dropp enligt US-M1-02.
