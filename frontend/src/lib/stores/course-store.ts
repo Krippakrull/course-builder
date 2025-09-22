@@ -16,7 +16,12 @@ function createInitialState(): CourseStoreState {
 }
 
 function sortLessons(lessons: Lesson[]): Lesson[] {
-  return [...lessons].sort((a, b) => a.position - b.position);
+  return [...lessons]
+    .sort((a, b) => a.position - b.position)
+    .map((lesson, index) => ({
+      ...lesson,
+      position: index,
+    }));
 }
 
 function sortModules(modules: Module[]): Module[] {
@@ -25,7 +30,45 @@ function sortModules(modules: Module[]): Module[] {
       ...module,
       lessons: sortLessons(module.lessons ?? []),
     }))
-    .sort((a, b) => a.position - b.position);
+    .sort((a, b) => a.position - b.position)
+    .map((module, index) => ({
+      ...module,
+      position: index,
+    }));
+}
+
+function resolveSelection(
+  modules: Module[],
+  previousModuleId: string | null,
+  previousLessonId: string | null
+) {
+  const moduleExists = previousModuleId
+    ? modules.some((module) => module.moduleId === previousModuleId)
+    : false;
+
+  const selectedModuleId = moduleExists
+    ? (previousModuleId as string)
+    : modules.at(0)?.moduleId ?? null;
+
+  const selectedLessonId = selectedModuleId
+    ? (() => {
+        const selectedModule = modules.find((module) => module.moduleId === selectedModuleId);
+        if (!selectedModule) {
+          return null;
+        }
+
+        if (
+          previousLessonId &&
+          selectedModule.lessons.some((lesson) => lesson.lessonId === previousLessonId)
+        ) {
+          return previousLessonId;
+        }
+
+        return selectedModule.lessons.at(0)?.lessonId ?? null;
+      })()
+    : null;
+
+  return { selectedModuleId, selectedLessonId };
 }
 
 function createCourseStore() {
@@ -59,14 +102,20 @@ function createCourseStore() {
           { ...module, lessons: sortLessons(module.lessons ?? []) },
         ]);
 
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          modules,
+          module.moduleId,
+          module.lessons.at(0)?.lessonId ?? null
+        );
+
         return {
           ...state,
           course: {
             ...state.course,
             modules,
           },
-          selectedModuleId: module.moduleId,
-          selectedLessonId: module.lessons.at(0)?.lessonId ?? null,
+          selectedModuleId,
+          selectedLessonId,
         };
       });
     },
@@ -90,18 +139,20 @@ function createCourseStore() {
           };
         });
 
-        const selectedModule = modules.find((module) => module.moduleId === moduleId);
-        const selectedLessonId = selectedModule?.lessons.find(
-          (item) => item.lessonId === lesson.lessonId
-        )?.lessonId ?? null;
+        const sortedModules = sortModules(modules);
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          sortedModules,
+          moduleId,
+          lesson.lessonId
+        );
 
         return {
           ...state,
           course: {
             ...state.course,
-            modules,
+            modules: sortedModules,
           },
-          selectedModuleId: moduleId,
+          selectedModuleId,
           selectedLessonId,
         };
       });
@@ -116,6 +167,165 @@ function createCourseStore() {
           ...state,
           selectedModuleId: moduleId,
           selectedLessonId: null,
+        };
+      });
+    },
+    removeModule(moduleId: string) {
+      update((state) => {
+        if (!state.course) {
+          return state;
+        }
+
+        const filteredModules = state.course.modules.filter((module) => module.moduleId !== moduleId);
+        const modules = sortModules(filteredModules);
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          modules,
+          state.selectedModuleId === moduleId ? null : state.selectedModuleId,
+          state.selectedModuleId === moduleId ? null : state.selectedLessonId
+        );
+
+        return {
+          ...state,
+          course: {
+            ...state.course,
+            modules,
+          },
+          selectedModuleId,
+          selectedLessonId,
+        };
+      });
+    },
+    removeLesson(moduleId: string, lessonId: string) {
+      update((state) => {
+        if (!state.course) {
+          return state;
+        }
+
+        const modules = state.course.modules.map((module) => {
+          if (module.moduleId !== moduleId) {
+            return module;
+          }
+
+          return {
+            ...module,
+            lessons: sortLessons(module.lessons.filter((lesson) => lesson.lessonId !== lessonId)),
+          };
+        });
+
+        const sortedModules = sortModules(modules);
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          sortedModules,
+          state.selectedModuleId,
+          state.selectedLessonId === lessonId ? null : state.selectedLessonId
+        );
+
+        return {
+          ...state,
+          course: {
+            ...state.course,
+            modules: sortedModules,
+          },
+          selectedModuleId,
+          selectedLessonId,
+        };
+      });
+    },
+    reorderModules(moduleIds: string[]) {
+      update((state) => {
+        if (!state.course) {
+          return state;
+        }
+
+        const moduleMap = new Map(state.course.modules.map((module) => [module.moduleId, module]));
+        const reordered: Module[] = [];
+
+        for (const moduleId of moduleIds) {
+          const module = moduleMap.get(moduleId);
+          if (module) {
+            reordered.push({
+              ...module,
+              position: reordered.length,
+              lessons: sortLessons(module.lessons ?? []),
+            });
+            moduleMap.delete(moduleId);
+          }
+        }
+
+        const remaining = Array.from(moduleMap.values()).map((module, index) => ({
+          ...module,
+          position: reordered.length + index,
+          lessons: sortLessons(module.lessons ?? []),
+        }));
+
+        const modules = [...reordered, ...remaining];
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          modules,
+          state.selectedModuleId,
+          state.selectedLessonId
+        );
+
+        return {
+          ...state,
+          course: {
+            ...state.course,
+            modules,
+          },
+          selectedModuleId,
+          selectedLessonId,
+        };
+      });
+    },
+    reorderLessons(moduleId: string, lessonIds: string[]) {
+      update((state) => {
+        if (!state.course) {
+          return state;
+        }
+
+        const modules = state.course.modules.map((module) => {
+          if (module.moduleId !== moduleId) {
+            return module;
+          }
+
+          const lessonMap = new Map(module.lessons.map((lesson) => [lesson.lessonId, lesson]));
+          const reorderedLessons: Lesson[] = [];
+
+          for (const lessonId of lessonIds) {
+            const lesson = lessonMap.get(lessonId);
+            if (lesson) {
+              reorderedLessons.push({
+                ...lesson,
+                position: reorderedLessons.length,
+              });
+              lessonMap.delete(lessonId);
+            }
+          }
+
+          const remainingLessons = Array.from(lessonMap.values()).map((lesson, index) => ({
+            ...lesson,
+            position: reorderedLessons.length + index,
+          }));
+
+          return {
+            ...module,
+            lessons: sortLessons([...reorderedLessons, ...remainingLessons]),
+          };
+        });
+
+        const sortedModules = sortModules(modules);
+        const { selectedModuleId, selectedLessonId } = resolveSelection(
+          sortedModules,
+          state.selectedModuleId,
+          state.selectedLessonId
+        );
+
+        return {
+          ...state,
+          course: {
+            ...state.course,
+            modules: sortedModules,
+          },
+          selectedModuleId,
+          selectedLessonId,
         };
       });
     },

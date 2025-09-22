@@ -50,6 +50,17 @@
   let isCreatingModule = false;
   let isLoadingCourse = false;
   let initialLoadError: string | null = null;
+  let moduleOrderSaving = false;
+  let moduleOrderSavingCount = 0;
+  let moduleDeletePending: Record<string, boolean | undefined> = {};
+  let lessonDeletePending: Record<string, boolean | undefined> = {};
+  let lessonOrderSaving: Record<string, number | undefined> = {};
+  let draggingModuleId: string | null = null;
+  let moduleDragOverId: string | null = null;
+  let draggingLesson: { moduleId: string; lessonId: string } | null = null;
+  let lessonDragOver: { moduleId: string; lessonId: string | null } | null = null;
+
+  $: moduleOrderSaving = moduleOrderSavingCount > 0;
 
   async function loadCourseFromBackend(courseId: string) {
     isLoadingCourse = true;
@@ -82,6 +93,15 @@
       lessonPending = {};
       moduleError = null;
       initialLoadError = null;
+      moduleOrderSavingCount = 0;
+      moduleOrderSaving = false;
+      moduleDeletePending = {};
+      lessonDeletePending = {};
+      lessonOrderSaving = {};
+      draggingModuleId = null;
+      moduleDragOverId = null;
+      draggingLesson = null;
+      lessonDragOver = null;
     } catch (error) {
       initialLoadError = (error as Error).message;
       return false;
@@ -223,6 +243,17 @@
     } catch (error) {
       console.warn('Kunde inte rensa kursreferens', error);
     }
+  }
+
+  function extractErrorMessage(payload: unknown, fallback: string) {
+    if (payload && typeof payload === 'object' && 'message' in payload) {
+      const message = (payload as { message?: unknown }).message;
+      if (typeof message === 'string' && message.trim().length > 0) {
+        return message;
+      }
+    }
+
+    return fallback;
   }
 
   // Helper: Ensure payload is a non-null object
@@ -425,6 +456,347 @@
     })();
   }
 
+  async function persistModuleOrder(moduleIds: string[]) {
+    if (!currentCourse) {
+      return;
+    }
+
+    moduleOrderSavingCount += 1;
+    moduleError = null;
+
+    try {
+      const response = await fetch(`${backendUrl}/courses/${currentCourse.courseId}/modules/order`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ moduleIds }),
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte spara modulordning (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+    } catch (error) {
+      moduleError = (error as Error).message;
+      if (currentCourse) {
+        await loadCourseFromBackend(currentCourse.courseId);
+      }
+    } finally {
+      moduleOrderSavingCount = Math.max(0, moduleOrderSavingCount - 1);
+    }
+  }
+
+  function handleModuleDragStart(event: DragEvent, moduleId: string) {
+    draggingModuleId = moduleId;
+    moduleDragOverId = moduleId;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', moduleId);
+    }
+  }
+
+  function handleModuleDragOver(event: DragEvent, moduleId: string) {
+    if (!draggingModuleId || draggingModuleId === moduleId) {
+      return;
+    }
+
+    event.preventDefault();
+    moduleDragOverId = moduleId;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleModuleDropZoneDragOver(event: DragEvent) {
+    if (!draggingModuleId) {
+      return;
+    }
+
+    event.preventDefault();
+    moduleDragOverId = null;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleModuleDrop(event: DragEvent, targetModuleId: string | null) {
+    if (!draggingModuleId || !currentCourse) {
+      return;
+    }
+
+    if (targetModuleId === draggingModuleId) {
+      draggingModuleId = null;
+      moduleDragOverId = null;
+      return;
+    }
+
+    event.preventDefault();
+
+    const modules = currentCourse.modules ?? [];
+    const fromIndex = modules.findIndex((module) => module.moduleId === draggingModuleId);
+    if (fromIndex === -1) {
+      draggingModuleId = null;
+      moduleDragOverId = null;
+      return;
+    }
+
+    const newOrder = [...modules];
+    const [movedModule] = newOrder.splice(fromIndex, 1);
+    const targetIndex =
+      targetModuleId === null
+        ? newOrder.length
+        : newOrder.findIndex((module) => module.moduleId === targetModuleId);
+
+    if (targetIndex < 0) {
+      newOrder.push(movedModule);
+    } else {
+      newOrder.splice(targetIndex, 0, movedModule);
+    }
+
+    const moduleIds = newOrder.map((module) => module.moduleId);
+    courseStore.reorderModules(moduleIds);
+    void persistModuleOrder(moduleIds);
+
+    draggingModuleId = null;
+    moduleDragOverId = null;
+  }
+
+  function handleModuleDragEnd() {
+    draggingModuleId = null;
+    moduleDragOverId = null;
+  }
+
+  async function handleDeleteModule(moduleId: string) {
+    if (!currentCourse || moduleDeletePending[moduleId]) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm(
+        'Vill du ta bort modulen? Alla lektioner i modulen tas också bort.'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    moduleDeletePending = { ...moduleDeletePending, [moduleId]: true };
+    moduleError = null;
+
+    try {
+      const response = await fetch(`${backendUrl}/modules/${moduleId}`, {
+        method: 'DELETE',
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte ta bort modulen (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+
+      courseStore.removeModule(moduleId);
+    } catch (error) {
+      moduleError = (error as Error).message;
+      if (currentCourse) {
+        await loadCourseFromBackend(currentCourse.courseId);
+      }
+    } finally {
+      const { [moduleId]: _removed, ...rest } = moduleDeletePending;
+      moduleDeletePending = rest;
+    }
+  }
+
+  async function persistLessonOrder(moduleId: string, lessonIds: string[]) {
+    if (!currentCourse) {
+      return;
+    }
+
+    const currentCount = lessonOrderSaving[moduleId] ?? 0;
+    lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: currentCount + 1 };
+    lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+
+    try {
+      const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons/order`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ lessonIds }),
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte spara lektionsordning (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+
+      lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+    } catch (error) {
+      lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
+      if (currentCourse) {
+        await loadCourseFromBackend(currentCourse.courseId);
+      }
+    } finally {
+      const currentValue = lessonOrderSaving[moduleId] ?? 1;
+      const nextValue = currentValue - 1;
+
+      if (nextValue > 0) {
+        lessonOrderSaving = { ...lessonOrderSaving, [moduleId]: nextValue };
+      } else {
+        const { [moduleId]: _removed, ...rest } = lessonOrderSaving;
+        lessonOrderSaving = rest;
+      }
+    }
+  }
+
+  function handleLessonDragStart(event: DragEvent, moduleId: string, lessonId: string) {
+    draggingLesson = { moduleId, lessonId };
+    lessonDragOver = { moduleId, lessonId };
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', lessonId);
+    }
+  }
+
+  function handleLessonDragOver(event: DragEvent, moduleId: string, lessonId: string) {
+    if (!draggingLesson || draggingLesson.moduleId !== moduleId || draggingLesson.lessonId === lessonId) {
+      return;
+    }
+
+    event.preventDefault();
+    lessonDragOver = { moduleId, lessonId };
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleLessonDropZoneDragOver(event: DragEvent, moduleId: string) {
+    if (!draggingLesson || draggingLesson.moduleId !== moduleId) {
+      return;
+    }
+
+    event.preventDefault();
+    lessonDragOver = { moduleId, lessonId: null };
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleLessonDrop(event: DragEvent, moduleId: string, targetLessonId: string | null) {
+    if (!draggingLesson || draggingLesson.moduleId !== moduleId || !currentCourse) {
+      return;
+    }
+
+    if (targetLessonId === draggingLesson.lessonId) {
+      draggingLesson = null;
+      lessonDragOver = null;
+      return;
+    }
+
+    event.preventDefault();
+
+    const module = currentCourse.modules.find((item) => item.moduleId === moduleId);
+    if (!module) {
+      draggingLesson = null;
+      lessonDragOver = null;
+      return;
+    }
+
+    const lessons = module.lessons ?? [];
+    const fromIndex = lessons.findIndex((lesson) => lesson.lessonId === draggingLesson?.lessonId);
+    if (fromIndex === -1) {
+      draggingLesson = null;
+      lessonDragOver = null;
+      return;
+    }
+
+    const newOrder = [...lessons];
+    const [movedLesson] = newOrder.splice(fromIndex, 1);
+    const targetIndex =
+      targetLessonId === null
+        ? newOrder.length
+        : newOrder.findIndex((lesson) => lesson.lessonId === targetLessonId);
+
+    if (targetIndex < 0) {
+      newOrder.push(movedLesson);
+    } else {
+      newOrder.splice(targetIndex, 0, movedLesson);
+    }
+
+    const lessonIds = newOrder.map((lesson) => lesson.lessonId);
+    courseStore.reorderLessons(moduleId, lessonIds);
+    void persistLessonOrder(moduleId, lessonIds);
+
+    draggingLesson = null;
+    lessonDragOver = null;
+  }
+
+  function handleLessonDragEnd() {
+    draggingLesson = null;
+    lessonDragOver = null;
+  }
+
+  async function handleDeleteLesson(moduleId: string, lessonId: string) {
+    if (lessonDeletePending[lessonId]) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm('Vill du ta bort lektionen?');
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    lessonDeletePending = { ...lessonDeletePending, [lessonId]: true };
+    lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+
+    try {
+      const response = await fetch(`${backendUrl}/lessons/${lessonId}`, {
+        method: 'DELETE',
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte ta bort lektionen (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+
+      courseStore.removeLesson(moduleId, lessonId);
+      lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+    } catch (error) {
+      lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
+      if (currentCourse) {
+        await loadCourseFromBackend(currentCourse.courseId);
+      }
+    } finally {
+      const { [lessonId]: _removed, ...rest } = lessonDeletePending;
+      lessonDeletePending = rest;
+    }
+  }
+
   function handleModuleDraftChange(moduleId: string, value: string) {
     lessonDrafts = { ...lessonDrafts, [moduleId]: value };
   }
@@ -487,16 +859,45 @@
           {/if}
 
           {#each currentCourse.modules as module, index}
-            <section class="module" class:active={module.moduleId === courseState.selectedModuleId}>
+            <section
+              class="module"
+              class:active={module.moduleId === courseState.selectedModuleId}
+              class:dragging={draggingModuleId === module.moduleId}
+              class:drop-target={
+                moduleDragOverId === module.moduleId && draggingModuleId !== module.moduleId
+              }
+              draggable="true"
+              on:dragstart={(event) => handleModuleDragStart(event, module.moduleId)}
+              on:dragover={(event) => handleModuleDragOver(event, module.moduleId)}
+              on:drop={(event) => handleModuleDrop(event, module.moduleId)}
+              on:dragend={handleModuleDragEnd}
+              role="listitem"
+            >
               <header>
-                <button
-                  type="button"
-                  class="module-trigger"
-                  on:click={() => courseStore.selectModule(module.moduleId)}
-                >
-                  <span class="module-index">Modul {index + 1}</span>
-                  <span class="module-title">{module.title}</span>
-                </button>
+                <div class="module-header">
+                  <button
+                    type="button"
+                    class="module-trigger"
+                    on:click={() => courseStore.selectModule(module.moduleId)}
+                  >
+                    <span class="drag-hint" aria-hidden="true">↕︎</span>
+                    <span class="module-trigger-text">
+                      <span class="module-index">Modul {index + 1}</span>
+                      <span class="module-title">{module.title}</span>
+                    </span>
+                  </button>
+                  <div class="module-actions">
+                    <button
+                      type="button"
+                      class="icon-button danger"
+                      on:click|stopPropagation={() => handleDeleteModule(module.moduleId)}
+                      disabled={Boolean(moduleDeletePending[module.moduleId])}
+                      aria-label={`Ta bort ${module.title}`}
+                    >
+                      {moduleDeletePending[module.moduleId] ? 'Tar bort…' : 'Ta bort'}
+                    </button>
+                  </div>
+                </div>
               </header>
 
               <div class="lessons">
@@ -505,20 +906,57 @@
                 {:else}
                   <ul>
                     {#each module.lessons as lesson, lessonIndex}
-                      <li>
-                        <button
-                          type="button"
-                          class:active={
-                            lesson.lessonId === courseState.selectedLessonId &&
-                            module.moduleId === courseState.selectedModuleId
-                          }
-                          on:click={() => courseStore.selectLesson(module.moduleId, lesson.lessonId)}
-                        >
-                          <span class="lesson-index">Lektion {lessonIndex + 1}</span>
-                          <span class="lesson-title">{lesson.title}</span>
-                        </button>
+                      <li
+                        class="lesson-item"
+                        class:dragging={draggingLesson?.lessonId === lesson.lessonId}
+                        class:drop-target={
+                          lessonDragOver?.moduleId === module.moduleId &&
+                          lessonDragOver?.lessonId === lesson.lessonId &&
+                          draggingLesson?.lessonId !== lesson.lessonId
+                        }
+                        draggable="true"
+                        on:dragstart={(event) =>
+                          handleLessonDragStart(event, module.moduleId, lesson.lessonId)}
+                        on:dragover={(event) =>
+                          handleLessonDragOver(event, module.moduleId, lesson.lessonId)}
+                        on:drop={(event) => handleLessonDrop(event, module.moduleId, lesson.lessonId)}
+                        on:dragend={handleLessonDragEnd}
+                      >
+                        <div class="lesson-row">
+                          <button
+                            type="button"
+                            class="lesson-select"
+                            class:active={
+                              lesson.lessonId === courseState.selectedLessonId &&
+                              module.moduleId === courseState.selectedModuleId
+                            }
+                            on:click={() => courseStore.selectLesson(module.moduleId, lesson.lessonId)}
+                          >
+                            <span class="lesson-index">Lektion {lessonIndex + 1}</span>
+                            <span class="lesson-title">{lesson.title}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="icon-button danger"
+                            on:click|stopPropagation={() =>
+                              handleDeleteLesson(module.moduleId, lesson.lessonId)}
+                            disabled={Boolean(lessonDeletePending[lesson.lessonId])}
+                            aria-label={`Ta bort ${lesson.title}`}
+                          >
+                            {lessonDeletePending[lesson.lessonId] ? 'Tar bort…' : 'Ta bort'}
+                          </button>
+                        </div>
                       </li>
                     {/each}
+                    {#if draggingLesson && draggingLesson.moduleId === module.moduleId}
+                      <li
+                        class="lesson-drop-zone"
+                        on:dragover={(event) => handleLessonDropZoneDragOver(event, module.moduleId)}
+                        on:drop={(event) => handleLessonDrop(event, module.moduleId, null)}
+                      >
+                        Släpp här för att placera sist
+                      </li>
+                    {/if}
                   </ul>
                 {/if}
 
@@ -545,11 +983,31 @@
                   {#if lessonErrors[module.moduleId]}
                     <p class="form-error">{lessonErrors[module.moduleId]}</p>
                   {/if}
+                  {#if lessonOrderSaving[module.moduleId]}
+                    <p class="inline-status">Sparar lektionsordning…</p>
+                  {/if}
                 </form>
               </div>
             </section>
           {/each}
+
+          {#if draggingModuleId}
+            <div
+              class="module-drop-zone"
+              on:dragover={handleModuleDropZoneDragOver}
+              on:drop={(event) => handleModuleDrop(event, null)}
+              role="button"
+              aria-label="Släpp för att placera modulen sist"
+              tabindex="0"
+            >
+              Släpp här för att placera modulen sist
+            </div>
+          {/if}
         </div>
+
+        {#if moduleOrderSaving}
+          <p class="module-status">Sparar modulordning…</p>
+        {/if}
 
         <form class="module-form" on:submit|preventDefault={handleAddModule}>
           <label class="sr-only" for="module-title">Modulstitel</label>
@@ -827,6 +1285,17 @@
     border-radius: 0.75rem;
     background: #f9fafb;
     overflow: hidden;
+    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, background 0.2s ease-in-out;
+  }
+
+  .module.dragging {
+    opacity: 0.65;
+  }
+
+  .module.drop-target {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+    background: #eef2ff;
   }
 
   .module.active {
@@ -843,17 +1312,40 @@
     background: rgba(37, 99, 235, 0.16);
   }
 
+  .module-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
   .module-trigger {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
+    align-items: center;
+    gap: 0.75rem;
     width: 100%;
     background: none;
     border: none;
     cursor: pointer;
     color: inherit;
     text-align: left;
+  }
+
+  .module-trigger:hover,
+  .module-trigger:focus-visible {
+    color: #1d4ed8;
+  }
+
+  .module-trigger-text {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+
+  .drag-hint {
+    font-size: 1.2rem;
+    color: #94a3b8;
   }
 
   .module-index {
@@ -867,6 +1359,12 @@
     font-size: 1.05rem;
     font-weight: 600;
     color: #1d2939;
+  }
+
+  .module-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
   .lessons {
@@ -885,7 +1383,26 @@
     gap: 0.5rem;
   }
 
-  .lessons button {
+  .lesson-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .lesson-item {
+    list-style: none;
+  }
+
+  .lesson-item.dragging {
+    opacity: 0.65;
+  }
+
+  .lesson-item.drop-target .lesson-select {
+    background: rgba(37, 99, 235, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.4);
+  }
+
+  .lesson-select {
     width: 100%;
     border: none;
     background: #fff;
@@ -901,7 +1418,7 @@
     transition: box-shadow 0.2s ease-in-out, background 0.2s ease-in-out;
   }
 
-  .lessons button.active {
+  .lesson-select.active {
     background: rgba(37, 99, 235, 0.12);
     box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.4);
     color: #1e3a8a;
@@ -917,6 +1434,72 @@
   .lesson-title {
     font-size: 0.95rem;
     font-weight: 500;
+  }
+
+  .icon-button {
+    border: none;
+    background: transparent;
+    color: #64748b;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.55rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: background 0.2s ease-in-out, color 0.2s ease-in-out;
+  }
+
+  .icon-button:hover,
+  .icon-button:focus-visible {
+    background: #e2e8f0;
+    color: #1f2937;
+  }
+
+  .icon-button.danger {
+    color: #b91c1c;
+  }
+
+  .icon-button.danger:hover,
+  .icon-button.danger:focus-visible {
+    background: #fee2e2;
+    color: #7f1d1d;
+  }
+
+  .icon-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .lesson-drop-zone {
+    margin-top: 0.25rem;
+    padding: 0.55rem 0.75rem;
+    border: 1px dashed #a5b4fc;
+    border-radius: 0.65rem;
+    color: #4338ca;
+    background: rgba(99, 102, 241, 0.08);
+    font-size: 0.85rem;
+    text-align: center;
+  }
+
+  .module-drop-zone {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border: 2px dashed #93c5fd;
+    border-radius: 0.75rem;
+    color: #1d4ed8;
+    background: rgba(37, 99, 235, 0.08);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .module-status {
+    margin: 0.75rem 0 0;
+    font-size: 0.85rem;
+    color: #475467;
+  }
+
+  .inline-status {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: #475467;
   }
 
   .lesson-form,
