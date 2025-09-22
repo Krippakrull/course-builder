@@ -3,13 +3,15 @@
   import { onMount } from 'svelte';
   import { courseStore } from '$lib';
   import type {
+    Course,
     CourseStoreState,
     CourseSummary,
-    Module,
     Lesson,
+    Module,
   } from '$lib';
 
   const backendUrl = env.PUBLIC_BACKEND_URL || 'http://localhost:3001';
+  const LAST_COURSE_STORAGE_KEY = 'course-builder:lastCourseId';
 
   type CreateCourseForm = {
     title: string;
@@ -46,29 +48,79 @@
 
   let moduleError: string | null = null;
   let isCreatingModule = false;
+  let isLoadingCourse = false;
+  let initialLoadError: string | null = null;
 
-  onMount(async () => {
-    backendStatus = 'loading';
+  async function loadCourseFromBackend(courseId: string) {
+    isLoadingCourse = true;
+    initialLoadError = null;
 
     try {
-      const response = await fetch(`${backendUrl}/health`);
-      const data = (await response.json().catch(() => null)) as
-        | { status?: string; database?: string; timestamp?: string }
-        | null;
+      const response = await fetch(`${backendUrl}/courses/${courseId}`);
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
 
       if (!response.ok) {
-        throw new Error(`Backend svarade med status ${response.status}`);
+        if (response.status === 404) {
+          clearStoredCourseId();
+          courseStore.reset();
+        }
+
+        const message =
+          payload && typeof payload === 'object' && 'message' in payload
+            ? String((payload as { message?: unknown }).message ?? 'Kunde inte ladda kursen.')
+            : `Kunde inte ladda kursen (status ${response.status}).`;
+        throw new Error(message);
       }
 
-      backendStatus = 'success';
-      backendMessage =
-        data?.database === 'connected'
-          ? 'Backend ansluten och databas kontaktbar.'
-          : 'Backend svarade.';
+      const course = parseCourseWithStructure(payload);
+      courseStore.setCourse(course);
+      persistLastCourseId(course.courseId);
+      newModuleTitle = '';
+      lessonDrafts = {};
+      lessonErrors = {};
+      lessonPending = {};
+      moduleError = null;
+      initialLoadError = null;
     } catch (error) {
-      backendStatus = 'error';
-      backendMessage = (error as Error).message;
+      initialLoadError = (error as Error).message;
+      return false;
+    } finally {
+      isLoadingCourse = false;
     }
+
+    return true;
+  }
+
+  onMount(() => {
+    void (async () => {
+      backendStatus = 'loading';
+
+      try {
+        const response = await fetch(`${backendUrl}/health`);
+        const data = (await response.json().catch(() => null)) as
+          | { status?: string; database?: string; timestamp?: string }
+          | null;
+
+        if (!response.ok) {
+          throw new Error(`Backend svarade med status ${response.status}`);
+        }
+
+        backendStatus = 'success';
+        backendMessage =
+          data?.database === 'connected'
+            ? 'Backend ansluten och databas kontaktbar.'
+            : 'Backend svarade.';
+
+        const storedCourseId = getStoredCourseId();
+        if (storedCourseId) {
+          await loadCourseFromBackend(storedCourseId);
+        }
+      } catch (error) {
+        backendStatus = 'error';
+        backendMessage = (error as Error).message;
+      }
+    })();
   });
 
   function openCreateCourseDialog() {
@@ -125,6 +177,54 @@
     return { courseId, title, language, createdAt, updatedAt };
   }
 
+  function parseCourseWithStructure(payload: unknown): Course {
+    const summary = parseCoursePayload(payload);
+    const modulesValue = payload && typeof payload === 'object' ? (payload as { modules?: unknown }).modules : undefined;
+    const modules = Array.isArray(modulesValue)
+      ? modulesValue.map((module, index) => parseModulePayload(module, `modul ${index + 1}`))
+      : [];
+
+    return { ...summary, modules };
+  }
+
+  function getStoredCourseId(): string | null {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    try {
+      const value = window.localStorage.getItem(LAST_COURSE_STORAGE_KEY);
+      return value && value.trim().length > 0 ? value : null;
+    } catch (error) {
+      console.warn('Kunde inte läsa sparad kursreferens', error);
+      return null;
+    }
+  }
+
+  function persistLastCourseId(courseId: string) {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(LAST_COURSE_STORAGE_KEY, courseId);
+    } catch (error) {
+      console.warn('Kunde inte spara kursreferens', error);
+    }
+  }
+
+  function clearStoredCourseId() {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(LAST_COURSE_STORAGE_KEY);
+    } catch (error) {
+      console.warn('Kunde inte rensa kursreferens', error);
+    }
+  }
+
   // Helper: Ensure payload is a non-null object
   function assertObject(payload: unknown, context: string) {
     if (!payload || typeof payload !== 'object') {
@@ -162,8 +262,7 @@
     };
   }
 
-  function parseModulePayload(payload: unknown): Module {
-    const context = 'modul';
+  function parseModulePayload(payload: unknown, context = 'modul'): Module {
     assertObject(payload, context);
     const { moduleId, title, position, lessons } = payload as Record<string, unknown>;
     assertStringFields(payload as Record<string, unknown>, ['moduleId', 'title'], context);
@@ -213,10 +312,15 @@
       }
 
       const course = parseCoursePayload(payload);
-      courseStore.setCourse(course);
+      courseStore.setCourse({ ...course, modules: [] as Module[] });
+      persistLastCourseId(course.courseId);
+      initialLoadError = null;
       showCreateCourseDialog = false;
       newModuleTitle = '';
       lessonDrafts = {};
+      lessonErrors = {};
+      lessonPending = {};
+      moduleError = null;
     } catch (error) {
       createCourseErrors = { general: (error as Error).message };
     } finally {
@@ -360,6 +464,14 @@
       </div>
     </div>
   </header>
+
+  {#if isLoadingCourse}
+    <p class="status-message">Laddar kursstruktur…</p>
+  {/if}
+
+  {#if initialLoadError}
+    <p class="alert">{initialLoadError}</p>
+  {/if}
 
   {#if currentCourse}
     <section class="workspace">
@@ -592,6 +704,12 @@
   .lead {
     margin: 0.25rem 0 0;
     color: #52606d;
+  }
+
+  .status-message {
+    margin: -0.5rem 0 0;
+    color: #475467;
+    font-size: 0.95rem;
   }
 
   .header-actions {
