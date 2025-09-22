@@ -125,52 +125,55 @@
     return { courseId, title, language, createdAt, updatedAt };
   }
 
-  function parseLessonPayload(payload: unknown, context = 'lesson'): Lesson {
+  // Helper: Ensure payload is a non-null object
+  function assertObject(payload: unknown, context: string) {
     if (!payload || typeof payload !== 'object') {
       throw new Error(`Oväntat svar för ${context}.`);
     }
+  }
 
+  // Helper: Validate required string fields
+  function assertStringFields(obj: Record<string, unknown>, fields: string[], context: string) {
+    for (const field of fields) {
+      if (typeof obj[field] !== 'string') {
+        throw new Error(`Svar saknar förväntade fält '${field}' för ${context}.`);
+      }
+    }
+  }
+
+  // Helper: Parse and validate numeric field
+  function parseNumericField(value: unknown, fieldName: string, context: string): number {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      throw new Error(`Fältet '${fieldName}' för ${context} är ogiltig.`);
+    }
+    return num;
+  }
+
+  function parseLessonPayload(payload: unknown, context = 'lesson'): Lesson {
+    assertObject(payload, context);
     const { lessonId, title, position } = payload as Record<string, unknown>;
-
-    if (typeof lessonId !== 'string' || typeof title !== 'string') {
-      throw new Error(`Svar saknar förväntade fält för ${context}.`);
-    }
-
-    const numericPosition = Number(position);
-    if (!Number.isFinite(numericPosition)) {
-      throw new Error(`Position för ${context} är ogiltig.`);
-    }
-
+    assertStringFields(payload as Record<string, unknown>, ['lessonId', 'title'], context);
+    const numericPosition = parseNumericField(position, 'position', context);
     return {
-      lessonId,
-      title,
+      lessonId: lessonId as string,
+      title: title as string,
       position: numericPosition,
     };
   }
 
   function parseModulePayload(payload: unknown): Module {
-    if (!payload || typeof payload !== 'object') {
-      throw new Error('Oväntat svar för modul.');
-    }
-
+    const context = 'modul';
+    assertObject(payload, context);
     const { moduleId, title, position, lessons } = payload as Record<string, unknown>;
-
-    if (typeof moduleId !== 'string' || typeof title !== 'string') {
-      throw new Error('Svar saknar förväntade fält för modul.');
-    }
-
-    const numericPosition = Number(position);
-    if (!Number.isFinite(numericPosition)) {
-      throw new Error('Position för modul är ogiltig.');
-    }
-
+    assertStringFields(payload as Record<string, unknown>, ['moduleId', 'title'], context);
+    const numericPosition = parseNumericField(position, 'position', context);
     const parsedLessons = Array.isArray(lessons)
       ? lessons.map((lesson, index) => parseLessonPayload(lesson, `lesson ${index + 1}`))
       : [];
-
     return {
-      moduleId,
-      title,
+      moduleId: moduleId as string,
+      title: title as string,
       position: numericPosition,
       lessons: parsedLessons,
     };
