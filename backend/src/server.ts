@@ -376,6 +376,374 @@ app.post(
   }
 );
 
+type ReorderModulesParams = {
+  courseId: string;
+};
+
+type ReorderModulesBody = {
+  moduleIds?: unknown;
+};
+
+app.patch(
+  '/courses/:courseId/modules/order',
+  async (req: Request<ReorderModulesParams, unknown, ReorderModulesBody>, res: Response) => {
+    if (!pool) {
+      res.status(503).json({ message: 'Database is not configured' });
+      return;
+    }
+
+    const courseId = req.params.courseId;
+    if (!isUuid(courseId)) {
+      res.status(400).json({ message: 'courseId must be a valid UUID' });
+      return;
+    }
+
+    const moduleIdsValue = req.body.moduleIds;
+    if (!Array.isArray(moduleIdsValue) || moduleIdsValue.length === 0) {
+      res.status(400).json({ message: 'moduleIds must be a non-empty array' });
+      return;
+    }
+
+    const moduleIds = moduleIdsValue.map((value) => (typeof value === 'string' ? value : '')).filter(Boolean);
+
+    if (moduleIds.length !== moduleIdsValue.length) {
+      res.status(400).json({ message: 'moduleIds must contain only strings' });
+      return;
+    }
+
+    const uniqueModuleIds = new Set(moduleIds);
+    if (uniqueModuleIds.size !== moduleIds.length) {
+      res.status(400).json({ message: 'moduleIds must be unique' });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const courseExists = await client.query('SELECT 1 FROM courses WHERE course_id = $1', [courseId]);
+
+      if (courseExists.rowCount === 0) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ message: 'Course not found' });
+        return;
+      }
+
+      const existingModules = await client.query<{ module_id: string; title: string }>(
+        'SELECT module_id, title FROM modules WHERE course_id = $1',
+        [courseId]
+      );
+
+      const existingModuleIds = existingModules.rows.map((row) => row.module_id);
+
+      if (existingModuleIds.length !== moduleIds.length) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ message: 'moduleIds does not match modules for the course' });
+        return;
+      }
+
+      const existingModuleIdSet = new Set(existingModuleIds);
+      for (const moduleId of moduleIds) {
+        if (!existingModuleIdSet.has(moduleId)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ message: 'moduleIds must reference modules belonging to the course' });
+          return;
+        }
+      }
+
+      for (const [index, moduleId] of moduleIds.entries()) {
+        await client.query('UPDATE modules SET position = $1, updated_at = NOW() WHERE module_id = $2', [
+          index,
+          moduleId,
+        ]);
+      }
+
+      await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
+
+      const orderedModules = await client.query<{ module_id: string; title: string; position: number }>(
+        'SELECT module_id, title, position FROM modules WHERE course_id = $1 ORDER BY position ASC',
+        [courseId]
+      );
+
+      await client.query('COMMIT');
+
+      res.json({
+        courseId,
+        modules: orderedModules.rows.map((row) => ({
+          moduleId: row.module_id,
+          title: row.title,
+          position: Number(row.position ?? 0),
+        })),
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Failed to reorder modules', error);
+      res.status(500).json({ message: 'Failed to reorder modules' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+type ReorderLessonsParams = {
+  moduleId: string;
+};
+
+type ReorderLessonsBody = {
+  lessonIds?: unknown;
+};
+
+app.patch(
+  '/modules/:moduleId/lessons/order',
+  async (req: Request<ReorderLessonsParams, unknown, ReorderLessonsBody>, res: Response) => {
+    if (!pool) {
+      res.status(503).json({ message: 'Database is not configured' });
+      return;
+    }
+
+    const moduleId = req.params.moduleId;
+    if (!isUuid(moduleId)) {
+      res.status(400).json({ message: 'moduleId must be a valid UUID' });
+      return;
+    }
+
+    const lessonIdsValue = req.body.lessonIds;
+    if (!Array.isArray(lessonIdsValue) || lessonIdsValue.length === 0) {
+      res.status(400).json({ message: 'lessonIds must be a non-empty array' });
+      return;
+    }
+
+    const lessonIds = lessonIdsValue.map((value) => (typeof value === 'string' ? value : '')).filter(Boolean);
+
+    if (lessonIds.length !== lessonIdsValue.length) {
+      res.status(400).json({ message: 'lessonIds must contain only strings' });
+      return;
+    }
+
+    const uniqueLessonIds = new Set(lessonIds);
+    if (uniqueLessonIds.size !== lessonIds.length) {
+      res.status(400).json({ message: 'lessonIds must be unique' });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const moduleResult = await client.query<{ course_id: string }>(
+        'SELECT course_id FROM modules WHERE module_id = $1',
+        [moduleId]
+      );
+
+      const moduleRow = moduleResult.rows[0];
+
+      if (!moduleRow) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ message: 'Module not found' });
+        return;
+      }
+
+      const courseId = moduleRow.course_id;
+
+      const existingLessons = await client.query<{ lesson_id: string; title: string }>(
+        'SELECT lesson_id, title FROM lessons WHERE module_id = $1',
+        [moduleId]
+      );
+
+      if (existingLessons.rows.length !== lessonIds.length) {
+        await client.query('ROLLBACK');
+        res
+          .status(400)
+          .json({ message: 'lessonIds does not match lessons belonging to the specified module' });
+        return;
+      }
+
+      const lessonIdSet = new Set(existingLessons.rows.map((row) => row.lesson_id));
+      for (const lessonId of lessonIds) {
+        if (!lessonIdSet.has(lessonId)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ message: 'lessonIds must reference lessons belonging to the module' });
+          return;
+        }
+      }
+
+      for (const [index, lessonId] of lessonIds.entries()) {
+        await client.query('UPDATE lessons SET position = $1, updated_at = NOW() WHERE lesson_id = $2', [
+          index,
+          lessonId,
+        ]);
+      }
+
+      await client.query('UPDATE modules SET updated_at = NOW() WHERE module_id = $1', [moduleId]);
+      await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
+
+      const orderedLessons = await client.query<{ lesson_id: string; title: string; position: number }>(
+        'SELECT lesson_id, title, position FROM lessons WHERE module_id = $1 ORDER BY position ASC',
+        [moduleId]
+      );
+
+      await client.query('COMMIT');
+
+      res.json({
+        moduleId,
+        lessons: orderedLessons.rows.map((row) => ({
+          lessonId: row.lesson_id,
+          title: row.title,
+          position: Number(row.position ?? 0),
+        })),
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Failed to reorder lessons', error);
+      res.status(500).json({ message: 'Failed to reorder lessons' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+type DeleteModuleParams = {
+  moduleId: string;
+};
+
+app.delete('/modules/:moduleId', async (req: Request<DeleteModuleParams>, res: Response) => {
+  if (!pool) {
+    res.status(503).json({ message: 'Database is not configured' });
+    return;
+  }
+
+  const moduleId = req.params.moduleId;
+  if (!isUuid(moduleId)) {
+    res.status(400).json({ message: 'moduleId must be a valid UUID' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const moduleResult = await client.query<{ course_id: string }>(
+      'SELECT course_id FROM modules WHERE module_id = $1',
+      [moduleId]
+    );
+
+    const moduleRow = moduleResult.rows[0];
+
+    if (!moduleRow) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ message: 'Module not found' });
+      return;
+    }
+
+    const courseId = moduleRow.course_id;
+
+    await client.query('DELETE FROM modules WHERE module_id = $1', [moduleId]);
+
+    const remainingModules = await client.query<{ module_id: string }>(
+      'SELECT module_id FROM modules WHERE course_id = $1 ORDER BY position ASC',
+      [courseId]
+    );
+
+    for (const [index, row] of remainingModules.rows.entries()) {
+      await client.query('UPDATE modules SET position = $1, updated_at = NOW() WHERE module_id = $2', [
+        index,
+        row.module_id,
+      ]);
+    }
+
+    await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
+
+    await client.query('COMMIT');
+
+    res.status(204).send();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Failed to delete module', error);
+    res.status(500).json({ message: 'Failed to delete module' });
+  } finally {
+    client.release();
+  }
+});
+
+type DeleteLessonParams = {
+  lessonId: string;
+};
+
+app.delete('/lessons/:lessonId', async (req: Request<DeleteLessonParams>, res: Response) => {
+  if (!pool) {
+    res.status(503).json({ message: 'Database is not configured' });
+    return;
+  }
+
+  const lessonId = req.params.lessonId;
+  if (!isUuid(lessonId)) {
+    res.status(400).json({ message: 'lessonId must be a valid UUID' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const lessonResult = await client.query<{ module_id: string }>(
+      'SELECT module_id FROM lessons WHERE lesson_id = $1',
+      [lessonId]
+    );
+
+    const lessonRow = lessonResult.rows[0];
+
+    if (!lessonRow) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ message: 'Lesson not found' });
+      return;
+    }
+
+    const moduleId = lessonRow.module_id;
+
+    const moduleResult = await client.query<{ course_id: string }>(
+      'SELECT course_id FROM modules WHERE module_id = $1',
+      [moduleId]
+    );
+
+    const moduleRow = moduleResult.rows[0];
+
+    if (!moduleRow) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ message: 'Module not found for lesson' });
+      return;
+    }
+
+    const courseId = moduleRow.course_id;
+
+    await client.query('DELETE FROM lessons WHERE lesson_id = $1', [lessonId]);
+
+    const remainingLessons = await client.query<{ lesson_id: string }>(
+      'SELECT lesson_id FROM lessons WHERE module_id = $1 ORDER BY position ASC',
+      [moduleId]
+    );
+
+    for (const [index, row] of remainingLessons.rows.entries()) {
+      await client.query('UPDATE lessons SET position = $1, updated_at = NOW() WHERE lesson_id = $2', [
+        index,
+        row.lesson_id,
+      ]);
+    }
+
+    await client.query('UPDATE modules SET updated_at = NOW() WHERE module_id = $1', [moduleId]);
+    await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
+
+    await client.query('COMMIT');
+
+    res.status(204).send();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Failed to delete lesson', error);
+    res.status(500).json({ message: 'Failed to delete lesson' });
+  } finally {
+    client.release();
+  }
+});
+
 async function ensureSchema(database: Pool) {
   await database.query(`
     CREATE TABLE IF NOT EXISTS courses (

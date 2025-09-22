@@ -33,3 +33,11 @@
 - Rensade och återställde lokalt tillstånd efter laddning och kurskapande för att förbereda kommande hantering av ordning och borttagning.
 
 **Nästa steg:** Bygg API- och UI-stöd för att omordna och ta bort moduler och lektioner (drag & drop + borttagningsflöden) så att kursstrukturen kan persisteras vid förändringar enligt US-M1-02.
+
+## 2025-09-23
+
+- Utökade backend med endpoints för att omordna moduler (`PATCH /courses/:courseId/modules/order`) och lektioner (`PATCH /modules/:moduleId/lessons/order`) samt borttagning av moduler och lektioner med positionsåterställning och tidsstämplar.
+- Implementerade drag-och-släpp i frontendens outline för att ändra modul- och lektionsordning, inklusive statusindikatorer, felhantering och fall-back-laddning vid misslyckade sparningar.
+- Lagt till borttagningsflöden med bekräftelser, UI-feedback och uppdaterade stores för att hålla vald modul/lektion konsekvent efter ändringar.
+
+**Nästa steg:** Påbörja US-M1-03 genom att etablera backend-endpoint för block (`PATCH /lessons/:id/blocks`) och en första blocklista i frontend (text/heading/list) med autosparningsgrund.
