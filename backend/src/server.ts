@@ -121,6 +121,98 @@ app.post(
   }
 );
 
+type GetCourseParams = {
+  courseId: string;
+};
+
+app.get('/courses/:courseId', async (req: Request<GetCourseParams>, res: Response) => {
+  if (!pool) {
+    res.status(503).json({ message: 'Database is not configured' });
+    return;
+  }
+
+  const courseId = req.params.courseId;
+  if (!isUuid(courseId)) {
+    res.status(400).json({ message: 'courseId must be a valid UUID' });
+    return;
+  }
+
+  try {
+    const courseResult = await pool.query(
+      `SELECT course_id, title, language, created_at, updated_at FROM courses WHERE course_id = $1`,
+      [courseId]
+    );
+
+    const courseRow = courseResult.rows[0];
+
+    if (!courseRow) {
+      res.status(404).json({ message: 'Course not found' });
+      return;
+    }
+
+    const modulesResult = await pool.query(
+      `SELECT m.module_id, m.title, m.position, l.lesson_id, l.title AS lesson_title, l.position AS lesson_position
+       FROM modules m
+       LEFT JOIN lessons l ON l.module_id = m.module_id
+       WHERE m.course_id = $1
+       ORDER BY m.position ASC, l.position ASC`,
+      [courseId]
+    );
+
+    const modulesMap = new Map<
+      string,
+      {
+        moduleId: string;
+        title: string;
+        position: number;
+        lessons: { lessonId: string; title: string; position: number }[];
+      }
+    >();
+
+    for (const row of modulesResult.rows) {
+      const moduleId = row.module_id as string;
+      if (!modulesMap.has(moduleId)) {
+        modulesMap.set(moduleId, {
+          moduleId,
+          title: row.title as string,
+          position: Number(row.position ?? 0),
+          lessons: [],
+        });
+      }
+
+      if (row.lesson_id) {
+        const module = modulesMap.get(moduleId);
+        if (module) {
+          module.lessons.push({
+            lessonId: row.lesson_id as string,
+            title: (row.lesson_title as string) ?? '',
+            position: Number(row.lesson_position ?? 0),
+          });
+        }
+      }
+    }
+
+    const modules = Array.from(modulesMap.values()).map((module) => ({
+      ...module,
+      lessons: module.lessons.sort((a, b) => a.position - b.position),
+    }));
+
+    modules.sort((a, b) => a.position - b.position);
+
+    res.json({
+      courseId: courseRow.course_id,
+      title: courseRow.title,
+      language: courseRow.language,
+      createdAt: courseRow.created_at,
+      updatedAt: courseRow.updated_at,
+      modules,
+    });
+  } catch (error) {
+    console.error('Failed to load course', error);
+    res.status(500).json({ message: 'Failed to load course' });
+  }
+});
+
 type CreateModuleParams = {
   courseId: string;
 };

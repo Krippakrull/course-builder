@@ -25,3 +25,11 @@
 - Kopplade frontendens modul- och lektionsformulär till backend, visade laddningsstatus och felmeddelanden samt sorterade lokala stores efter position.
 
 **Nästa steg:** Implementera `GET /courses/:id` som returnerar kurs med moduler/lektioner och ladda kursstrukturen från backend vid initiering. Förbered därefter stöd för omordning (drag & drop) och borttagning enligt US-M1-02.
+
+## 2025-09-22
+
+- Implementerade `GET /courses/:id` i backend som returnerar kurs med moduler och lektioner sorterade efter position samt hanterar saknade kurser.
+- Laddade kursstrukturen i frontend vid initiering genom att minnas senaste kurs-ID i `localStorage`, hämta kursdata från backend och visa status-/felmeddelanden.
+- Rensade och återställde lokalt tillstånd efter laddning och kurskapande för att förbereda kommande hantering av ordning och borttagning.
+
+**Nästa steg:** Bygg API- och UI-stöd för att omordna och ta bort moduler och lektioner (drag & drop + borttagningsflöden) så att kursstrukturen kan persisteras vid förändringar enligt US-M1-02.
