@@ -41,3 +41,11 @@
 - Lagt till borttagningsflöden med bekräftelser, UI-feedback och uppdaterade stores för att hålla vald modul/lektion konsekvent efter ändringar.
 
 **Nästa steg:** Påbörja US-M1-03 genom att etablera backend-endpoint för block (`PATCH /lessons/:id/blocks`) och en första blocklista i frontend (text/heading/list) med autosparningsgrund.
+
+## 2025-09-24
+
+- Konverterade frontendens kursvy till Svelte 5 runes-läge, ersatte den tidigare reaktiviteten med `$state`/`$effect` och uppdaterade händelsebindningar till den nya attributsyntaktiken.
+- Synkade kursstoren mot lokala runes-tillstånd och anpassade formulär, drag-och-släpp samt dialoglogik för att fungera med det nya event-API:et.
+- Säkerställde att Svelte-check passerar utan varningar genom att justera typinferenser och event-hantering enligt Svelte 5:s riktlinjer.
+
+**Nästa steg:** Fortsätt US-M1-03 genom att bygga backend-endpointen för block (`PATCH /lessons/:id/blocks`) och introducera blocklistan i frontend med autosparningsstöd.
