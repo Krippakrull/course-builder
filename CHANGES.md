@@ -57,3 +57,11 @@
 - Uppdaterade dokumentation, miljövariabler och Docker-konfigurationen för att spegla den nya enhetliga applikationen.
 
 **Nästa steg:** Fortsätt US-M1-03 i den nya strukturen genom att bygga block-endpointen direkt i SvelteKit (`PATCH /lessons/:lessonId/blocks`) och koppla på blocklistan med autosparning i UI:t.
+
+## 2025-09-26
+
+- Utökade databasschemat med block-tabell och implementerade `PATCH /lessons/:lessonId/blocks` i SvelteKit med validering, versionshantering och transaktioner.
+- Uppdaterade `GET /courses/:id` att inkludera blockdata per lektion så att frontend kan ladda komplett kursstruktur.
+- Introducerade blocklista i kursvyn med stöd för text-, rubrik- och listblock, inklusive autosparning, statusindikatorer och enkel blockhantering.
+
+**Nästa steg:** Bygg vidare på blockredigeraren med ordningsändring (drag & drop) och duplikering av block för att slutföra US-M1-03 inför rikare redigeringsupplevelse.

@@ -27,11 +27,31 @@ export async function GET({ params }: Parameters<import('@sveltejs/kit').Request
       throw error(404, 'Course not found');
     }
 
-    const moduleResult = await pool.query<{
+    type ModuleRow = {
       module_id: string;
       title: string;
       position: number;
-    }>(
+    };
+
+    type LessonRow = {
+      lesson_id: string;
+      module_id: string;
+      title: string;
+      position: number;
+    };
+
+    type BlockRow = {
+      block_id: string;
+      lesson_id: string;
+      type: string;
+      content: Record<string, unknown>;
+      version: number;
+      position: number;
+      created_at: string;
+      updated_at: string;
+    };
+
+    const moduleResult = await pool.query<ModuleRow>(
       `SELECT module_id, title, position
        FROM modules
        WHERE course_id = $1
@@ -39,28 +59,45 @@ export async function GET({ params }: Parameters<import('@sveltejs/kit').Request
       [courseId]
     );
 
-    const moduleIds = moduleResult.rows.map((row) => row.module_id);
+    const moduleIds = moduleResult.rows.map((row: ModuleRow) => row.module_id);
     const lessonsResult = moduleIds.length
-      ? await pool.query<{
-          lesson_id: string;
-          module_id: string;
-          title: string;
-          position: number;
-        }>(
+      ? await pool.query<LessonRow>(
           `SELECT lesson_id, module_id, title, position
            FROM lessons
            WHERE module_id = ANY($1::uuid[])
            ORDER BY position ASC`,
           [moduleIds]
         )
-      : { rows: [] as {
-          lesson_id: string;
-          module_id: string;
-          title: string;
-          position: number;
-        }[] };
+      : { rows: [] as LessonRow[] };
 
-    const lessonsByModule = new Map<string, { lessonId: string; title: string; position: number }[]>();
+    const lessonIds = lessonsResult.rows.map((row: LessonRow) => row.lesson_id);
+
+    const blocksResult = lessonIds.length
+      ? await pool.query<BlockRow>(
+          `SELECT block_id, lesson_id, type, content, version, position, created_at, updated_at
+           FROM blocks
+           WHERE lesson_id = ANY($1::uuid[])
+           ORDER BY position ASC`,
+          [lessonIds]
+        )
+      : { rows: [] as BlockRow[] };
+
+    type LessonSummary = { lessonId: string; title: string; position: number };
+    type BlockSummary = {
+      blockId: string;
+      type: string;
+      content: Record<string, unknown>;
+      version: number;
+      position: number;
+      createdAt: string;
+      updatedAt: string;
+    };
+
+    const lessonsByModule = new Map<string, LessonSummary[]>();
+    const blocksByLesson = new Map<
+      string,
+      BlockSummary[]
+    >();
 
     for (const lesson of lessonsResult.rows) {
       const collection = lessonsByModule.get(lesson.module_id) ?? [];
@@ -72,11 +109,37 @@ export async function GET({ params }: Parameters<import('@sveltejs/kit').Request
       lessonsByModule.set(lesson.module_id, collection);
     }
 
-    const modules = moduleResult.rows.map((row) => ({
+    for (const block of blocksResult.rows) {
+      const collection = blocksByLesson.get(block.lesson_id) ?? [];
+      collection.push({
+        blockId: block.block_id,
+        type: block.type,
+        content: block.content ?? {},
+        version: Number(block.version ?? 1),
+        position: Number(block.position ?? 0),
+        createdAt: block.created_at,
+        updatedAt: block.updated_at,
+      });
+      blocksByLesson.set(block.lesson_id, collection);
+    }
+
+    type ModuleSummary = {
+      moduleId: string;
+      title: string;
+      position: number;
+      lessons: (LessonSummary & { blocks: BlockSummary[] })[];
+    };
+
+    const modules: ModuleSummary[] = moduleResult.rows.map((row) => ({
       moduleId: row.module_id,
       title: row.title,
       position: Number(row.position ?? 0),
-      lessons: (lessonsByModule.get(row.module_id) ?? []).sort((a, b) => a.position - b.position),
+      lessons: (lessonsByModule.get(row.module_id) ?? [])
+        .sort((a, b) => a.position - b.position)
+        .map((lesson) => ({
+          ...lesson,
+          blocks: (blocksByLesson.get(lesson.lessonId) ?? []).sort((a, b) => a.position - b.position),
+        })),
     }));
 
     modules.sort((a, b) => a.position - b.position);

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Course, CourseSummary, Lesson, Module } from '$lib/types/course';
+import type { Block, Course, CourseSummary, Lesson, Module } from '$lib/types/course';
 
 export type CourseStoreState = {
   course: Course | null;
@@ -15,12 +15,22 @@ function createInitialState(): CourseStoreState {
   };
 }
 
+function sortBlocks(blocks: Block[]): Block[] {
+  return [...blocks]
+    .sort((a, b) => a.position - b.position)
+    .map((block, index) => ({
+      ...block,
+      position: index,
+    }));
+}
+
 function sortLessons(lessons: Lesson[]): Lesson[] {
   return [...lessons]
     .sort((a, b) => a.position - b.position)
     .map((lesson, index) => ({
       ...lesson,
       position: index,
+      blocks: sortBlocks(lesson.blocks ?? []),
     }));
 }
 
@@ -99,7 +109,10 @@ function createCourseStore() {
 
         const modules = sortModules([
           ...state.course.modules.filter((item) => item.moduleId !== module.moduleId),
-          { ...module, lessons: sortLessons(module.lessons ?? []) },
+          {
+            ...module,
+            lessons: sortLessons(module.lessons ?? []),
+          },
         ]);
 
         const { selectedModuleId, selectedLessonId } = resolveSelection(
@@ -339,6 +352,35 @@ function createCourseStore() {
           ...state,
           selectedModuleId: moduleId,
           selectedLessonId: lessonId,
+        };
+      });
+    },
+    setLessonBlocks(lessonId: string, blocks: Block[]) {
+      update((state) => {
+        if (!state.course) {
+          return state;
+        }
+
+        const modules = state.course.modules.map((module) => ({
+          ...module,
+          lessons: module.lessons.map((lesson) => {
+            if (lesson.lessonId !== lessonId) {
+              return lesson;
+            }
+
+            return {
+              ...lesson,
+              blocks: sortBlocks(blocks),
+            };
+          }),
+        }));
+
+        return {
+          ...state,
+          course: {
+            ...state.course,
+            modules: sortModules(modules),
+          },
         };
       });
     },

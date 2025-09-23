@@ -17,7 +17,7 @@ export function getPool() {
 
   if (!pool) {
     pool = new Pool({ connectionString: databaseUrl });
-    pool.on('error', (error) => {
+    pool.on('error', (error: Error) => {
       console.error('Unexpected database error', error);
     });
   }
@@ -53,6 +53,20 @@ async function ensureSchema(db: Pool) {
       module_id uuid REFERENCES modules(module_id) ON DELETE CASCADE,
       title text NOT NULL,
       position int NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS blocks (
+      block_id uuid PRIMARY KEY,
+      lesson_id uuid REFERENCES lessons(lesson_id) ON DELETE CASCADE,
+      type text NOT NULL,
+      content jsonb NOT NULL,
+      version int NOT NULL DEFAULT 1,
+      position int NOT NULL,
+      ai jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );

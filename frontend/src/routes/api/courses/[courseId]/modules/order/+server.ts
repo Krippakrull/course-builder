@@ -52,7 +52,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
       [courseId]
     );
 
-    const existingModuleIds = existingModules.rows.map((row) => row.module_id);
+    const existingModuleIds = existingModules.rows.map((row: { module_id: string }) => row.module_id);
 
     if (existingModuleIds.length !== moduleIds.length) {
       await client.query('ROLLBACK');
@@ -88,7 +88,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
     return json({
       courseId,
-      modules: orderedModules.rows.map((row) => ({
+      modules: orderedModules.rows.map((row: { module_id: string; title: string; position: number }) => ({
         moduleId: row.module_id,
         title: row.title,
         position: Number(row.position ?? 0),

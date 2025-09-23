@@ -6,10 +6,15 @@
   import { courseStore } from '$lib';
   import type { PageData } from './$types';
   import type {
+    Block,
+    BlockType,
+    HeadingBlockContent,
+    ListBlockContent,
     Course,
     CourseStoreState,
     CourseSummary,
     Lesson,
+    TextBlockContent,
     Module,
   } from '$lib';
 
@@ -26,6 +31,11 @@
   type LessonErrorMap = Record<string, string | undefined>;
   type PendingMap = Record<string, boolean | undefined>;
   type LessonSavingMap = Record<string, number | undefined>;
+  type BlockErrorMap = Record<string, string | undefined>;
+  type BlockFlagMap = Record<string, boolean | undefined>;
+
+  const blockSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const blockSuccessTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const languageOptions = [
     { value: 'sv', label: 'Svenska' },
@@ -63,6 +73,12 @@
   let moduleDragOverId = $state<string | null>(null);
   let draggingLesson = $state<{ moduleId: string; lessonId: string } | null>(null);
   let lessonDragOver = $state<{ moduleId: string; lessonId: string | null } | null>(null);
+  let blockDirty = $state<BlockFlagMap>({});
+  let blockSaving = $state<BlockFlagMap>({});
+  let blockErrors = $state<BlockErrorMap>({});
+  let blockSuccess = $state<BlockFlagMap>({});
+
+  let lastSelectedLessonId: string | null = null;
 
   $effect(() => {
     currentCourse = courseState.course;
@@ -82,6 +98,21 @@
 
   $effect(() => {
     moduleOrderSaving = moduleOrderSavingCount > 0;
+  });
+
+  $effect(() => {
+    const currentLessonId = courseState.selectedLessonId ?? null;
+
+    if (lastSelectedLessonId && lastSelectedLessonId !== currentLessonId) {
+      const pendingTimer = blockSaveTimers.has(lastSelectedLessonId);
+      const isDirty = Boolean(blockDirty[lastSelectedLessonId]);
+
+      if (pendingTimer || isDirty) {
+        void saveLessonBlocks(lastSelectedLessonId);
+      }
+    }
+
+    lastSelectedLessonId = currentLessonId;
   });
 
   onMount(() => {
@@ -164,6 +195,12 @@
       }
 
       const course = parseCourseWithStructure(payload);
+      clearAllBlockTimers();
+      blockDirty = {};
+      blockSaving = {};
+      blockErrors = {};
+      blockSuccess = {};
+      lastSelectedLessonId = null;
       courseStore.setCourse(course);
       persistLastCourseId(course.courseId);
       newModuleTitle = '';
@@ -325,16 +362,93 @@
     return num;
   }
 
+  function parseBlockContent(
+    type: BlockType,
+    content: unknown,
+    context: string
+  ): Block['content'] {
+    if (!content || typeof content !== 'object') {
+      throw new Error(`Blockinnehåll för ${context} saknas eller är ogiltigt.`);
+    }
+
+    if (type === 'text') {
+      const textValue = (content as { text?: unknown }).text;
+      return { text: typeof textValue === 'string' ? textValue : '' };
+    }
+
+    if (type === 'heading') {
+      const textValue = (content as { text?: unknown }).text;
+      const levelValue = (content as { level?: unknown }).level;
+      const parsedLevel = Number(levelValue);
+      const level = Number.isInteger(parsedLevel) ? Math.min(Math.max(parsedLevel, 1), 6) : 2;
+      return {
+        text: typeof textValue === 'string' ? textValue : '',
+        level,
+      };
+    }
+
+    const listContent = content as { items?: unknown; style?: unknown };
+    const items = Array.isArray(listContent.items)
+      ? listContent.items.map((item) => (typeof item === 'string' ? item : String(item ?? '')))
+      : [];
+    const style = listContent.style === 'numbered' ? 'numbered' : 'bulleted';
+    return { items, style };
+  }
+
+  function parseBlockPayload(payload: unknown, context = 'block'): Block {
+    assertObject(payload, context);
+    const { blockId, type, content, position, version, createdAt, updatedAt } = payload as Record<
+      string,
+      unknown
+    >;
+
+    assertStringFields(payload as Record<string, unknown>, ['blockId', 'type', 'createdAt', 'updatedAt'], context);
+
+    if (!['text', 'heading', 'list'].includes(String(type))) {
+      throw new Error(`Block-typen för ${context} är ogiltig.`);
+    }
+
+    const parsedContent = parseBlockContent(type as BlockType, content, context);
+    const numericPosition = parseNumericField(position, 'position', context);
+    const numericVersion = parseNumericField(version, 'version', context);
+
+    return {
+      blockId: blockId as string,
+      type: type as BlockType,
+      content: parsedContent,
+      position: numericPosition,
+      version: numericVersion,
+      createdAt: createdAt as string,
+      updatedAt: updatedAt as string,
+    };
+  }
+
   function parseLessonPayload(payload: unknown, context = 'lesson'): Lesson {
     assertObject(payload, context);
-    const { lessonId, title, position } = payload as Record<string, unknown>;
+    const { lessonId, title, position, blocks } = payload as Record<string, unknown>;
     assertStringFields(payload as Record<string, unknown>, ['lessonId', 'title'], context);
     const numericPosition = parseNumericField(position, 'position', context);
+    const parsedBlocks = Array.isArray(blocks)
+      ? blocks.map((block, index) => parseBlockPayload(block, `${context} block ${index + 1}`))
+      : [];
     return {
       lessonId: lessonId as string,
       title: title as string,
       position: numericPosition,
+      blocks: parsedBlocks,
     };
+  }
+
+  function isListContent(content: Block['content']): content is ListBlockContent {
+    return Array.isArray((content as { items?: unknown }).items);
+  }
+
+  function isHeadingContent(content: Block['content']): content is HeadingBlockContent {
+    return typeof (content as { level?: unknown }).level !== 'undefined';
+  }
+
+  function isTextContent(content: Block['content']): content is TextBlockContent {
+    return !isListContent(content) && !isHeadingContent(content);
   }
 
   function parseModulePayload(payload: unknown, context = 'modul'): Module {
@@ -351,6 +465,414 @@
       position: numericPosition,
       lessons: parsedLessons,
     };
+  }
+
+  function clearBlockTimer(lessonId: string) {
+    const existing = blockSaveTimers.get(lessonId);
+    if (existing) {
+      clearTimeout(existing);
+      blockSaveTimers.delete(lessonId);
+    }
+  }
+
+  function clearBlockSuccessTimer(lessonId: string) {
+    const existing = blockSuccessTimers.get(lessonId);
+    if (existing) {
+      clearTimeout(existing);
+      blockSuccessTimers.delete(lessonId);
+    }
+  }
+
+  function clearAllBlockTimers() {
+    for (const timer of blockSaveTimers.values()) {
+      clearTimeout(timer);
+    }
+    blockSaveTimers.clear();
+
+    for (const timer of blockSuccessTimers.values()) {
+      clearTimeout(timer);
+    }
+    blockSuccessTimers.clear();
+  }
+
+  function setBlockDirtyFlag(lessonId: string, value: boolean) {
+    if (value) {
+      blockDirty = { ...blockDirty, [lessonId]: true };
+    } else {
+      const { [lessonId]: _removed, ...rest } = blockDirty;
+      blockDirty = rest;
+    }
+  }
+
+  function setBlockSavingFlag(lessonId: string, value: boolean) {
+    if (value) {
+      blockSaving = { ...blockSaving, [lessonId]: true };
+    } else {
+      const { [lessonId]: _removed, ...rest } = blockSaving;
+      blockSaving = rest;
+    }
+  }
+
+  function setBlockError(lessonId: string, message: string | null) {
+    if (message && message.trim().length > 0) {
+      blockErrors = { ...blockErrors, [lessonId]: message };
+    } else {
+      const { [lessonId]: _removed, ...rest } = blockErrors;
+      blockErrors = rest;
+    }
+  }
+
+  function setBlockSuccessFlag(lessonId: string, value: boolean) {
+    clearBlockSuccessTimer(lessonId);
+
+    if (value) {
+      blockSuccess = { ...blockSuccess, [lessonId]: true };
+      const timer = setTimeout(() => {
+        const { [lessonId]: _removed, ...rest } = blockSuccess;
+        blockSuccess = rest;
+        blockSuccessTimers.delete(lessonId);
+      }, 2000);
+      blockSuccessTimers.set(lessonId, timer);
+    } else {
+      const { [lessonId]: _removed, ...rest } = blockSuccess;
+      blockSuccess = rest;
+    }
+  }
+
+  function getLessonById(lessonId: string) {
+    if (!courseState.course) {
+      return null;
+    }
+
+    for (const module of courseState.course.modules) {
+      const lesson = module.lessons.find((item) => item.lessonId === lessonId);
+      if (lesson) {
+        return { module, lesson };
+      }
+    }
+
+    return null;
+  }
+
+  function updateBlocksForLesson(
+    lessonId: string,
+    updater: (blocks: Block[]) => Block[]
+  ) {
+    const resolved = getLessonById(lessonId);
+    if (!resolved) {
+      return false;
+    }
+
+    const currentBlocks = resolved.lesson.blocks ?? [];
+    const updatedBlocks = updater(currentBlocks);
+
+    if (updatedBlocks === currentBlocks) {
+      return false;
+    }
+
+    courseStore.setLessonBlocks(lessonId, updatedBlocks);
+    setBlockSuccessFlag(lessonId, false);
+    return true;
+  }
+
+  function generateBlockId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+
+    return `block-${Math.random().toString(36).slice(2, 10)}-${Date.now()}`;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function createDefaultContent(type: BlockType): Block['content'] {
+    if (type === 'heading') {
+      return { text: '', level: 2 } satisfies HeadingBlockContent;
+    }
+
+    if (type === 'list') {
+      return { items: [''], style: 'bulleted' } satisfies ListBlockContent;
+    }
+
+    return { text: '' } satisfies TextBlockContent;
+  }
+
+  function getBlockTypeLabel(type: BlockType) {
+    switch (type) {
+      case 'heading':
+        return 'Rubrik';
+      case 'list':
+        return 'Lista';
+      default:
+        return 'Text';
+    }
+  }
+
+  function serializeBlockForRequest(block: Block, index: number) {
+    if (isListContent(block.content)) {
+      const items = block.content.items.map((item) => item.replace(/\r/g, ''));
+      return {
+        blockId: block.blockId,
+        type: block.type,
+        position: index,
+        content: {
+          items,
+          style: block.content.style === 'numbered' ? 'numbered' : 'bulleted',
+        },
+      };
+    }
+
+    if (isHeadingContent(block.content)) {
+      const level = Math.min(Math.max(Math.round(block.content.level ?? 2), 1), 6);
+      return {
+        blockId: block.blockId,
+        type: block.type,
+        position: index,
+        content: {
+          text: block.content.text ?? '',
+          level,
+        },
+      };
+    }
+
+    const textContent = isTextContent(block.content) ? block.content.text : '';
+    return {
+      blockId: block.blockId,
+      type: block.type,
+      position: index,
+      content: {
+        text: textContent ?? '',
+      },
+    };
+  }
+
+  function scheduleLessonBlocksSave(lessonId: string, delay = 900) {
+    if (!lessonId) {
+      return;
+    }
+
+    clearBlockTimer(lessonId);
+    setBlockDirtyFlag(lessonId, true);
+    setBlockError(lessonId, null);
+
+    if (delay <= 0) {
+      void saveLessonBlocks(lessonId);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void saveLessonBlocks(lessonId);
+    }, delay);
+    blockSaveTimers.set(lessonId, timer);
+  }
+
+  function triggerImmediateBlockSave(lessonId: string) {
+    scheduleLessonBlocksSave(lessonId, 0);
+  }
+
+  async function saveLessonBlocks(lessonId: string) {
+    if (!lessonId) {
+      return;
+    }
+
+    clearBlockTimer(lessonId);
+
+    const resolved = getLessonById(lessonId);
+    if (!resolved) {
+      setBlockDirtyFlag(lessonId, false);
+      setBlockSavingFlag(lessonId, false);
+      setBlockError(lessonId, null);
+      setBlockSuccessFlag(lessonId, false);
+      return;
+    }
+
+    const lessonBlocks = resolved.lesson.blocks ?? [];
+    const payloadBlocks = lessonBlocks.map((block, index) => serializeBlockForRequest(block, index));
+
+    setBlockSavingFlag(lessonId, true);
+    setBlockError(lessonId, null);
+
+    try {
+      const response = await fetch(`${apiBase}/lessons/${lessonId}/blocks`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ blocks: payloadBlocks }),
+      });
+
+      const text = await response.text();
+      const payload = text ? (JSON.parse(text) as unknown) : null;
+
+      if (!response.ok) {
+        const message = extractErrorMessage(
+          payload,
+          `Kunde inte spara blocken (status ${response.status}).`
+        );
+        throw new Error(message);
+      }
+
+      const blocksValue =
+        payload && typeof payload === 'object' ? (payload as { blocks?: unknown }).blocks : undefined;
+
+      const parsedBlocks = Array.isArray(blocksValue)
+        ? blocksValue.map((block, index) => parseBlockPayload(block, `sparat block ${index + 1}`))
+        : [];
+
+      courseStore.setLessonBlocks(lessonId, parsedBlocks);
+      setBlockDirtyFlag(lessonId, false);
+      setBlockError(lessonId, null);
+      setBlockSuccessFlag(lessonId, true);
+    } catch (error) {
+      console.error('Failed to save lesson blocks', error);
+      setBlockError(lessonId, (error as Error).message);
+      setBlockDirtyFlag(lessonId, true);
+    } finally {
+      setBlockSavingFlag(lessonId, false);
+    }
+  }
+
+  function handleAddBlock(type: BlockType) {
+    if (!selectedLesson) {
+      return;
+    }
+
+    const lessonId = selectedLesson.lessonId;
+
+    const newBlock: Block = {
+      blockId: generateBlockId(),
+      type,
+      content: createDefaultContent(type),
+      position: selectedLesson.blocks.length,
+      version: 1,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    const changed = updateBlocksForLesson(lessonId, (blocks) => [...blocks, newBlock]);
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId);
+    }
+  }
+
+  function mutateBlock(
+    lessonId: string,
+    blockId: string,
+    mutator: (block: Block) => Block | null
+  ) {
+    const changed = updateBlocksForLesson(lessonId, (blocks) => {
+      const updated = [] as Block[];
+      let changed = false;
+
+      for (const block of blocks) {
+        if (block.blockId !== blockId) {
+          updated.push(block);
+          continue;
+        }
+
+        const result = mutator(block);
+        if (result) {
+          updated.push(result);
+        }
+        changed = true;
+      }
+
+      return changed ? updated : blocks;
+    });
+    return changed;
+  }
+
+  function handleDeleteBlock(lessonId: string, blockId: string) {
+    const changed = mutateBlock(lessonId, blockId, () => null);
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId, 200);
+    }
+  }
+
+  function handleBlockTextChange(lessonId: string, blockId: string, value: string) {
+    const changed = mutateBlock(lessonId, blockId, (block) => {
+      if (isListContent(block.content)) {
+        return block;
+      }
+
+      const nextContent = isHeadingContent(block.content)
+        ? { ...block.content, text: value }
+        : { text: value };
+
+      return {
+        ...block,
+        content: nextContent,
+        updatedAt: nowIso(),
+      };
+    });
+
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId);
+    }
+  }
+
+  function handleHeadingLevelChange(lessonId: string, blockId: string, level: number) {
+    const normalized = Math.min(Math.max(Math.round(level), 1), 6);
+
+    const changed = mutateBlock(lessonId, blockId, (block) => {
+      if (!isHeadingContent(block.content)) {
+        return block;
+      }
+
+      return {
+        ...block,
+        content: { ...block.content, level: normalized },
+        updatedAt: nowIso(),
+      };
+    });
+
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId);
+    }
+  }
+
+  function handleListItemsChange(lessonId: string, blockId: string, value: string) {
+    const items = value.replace(/\r/g, '').split('\n');
+
+    const changed = mutateBlock(lessonId, blockId, (block) => {
+      if (!isListContent(block.content)) {
+        return block;
+      }
+
+      return {
+        ...block,
+        content: { ...block.content, items },
+        updatedAt: nowIso(),
+      };
+    });
+
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId);
+    }
+  }
+
+  function handleListStyleChange(
+    lessonId: string,
+    blockId: string,
+    style: 'bulleted' | 'numbered'
+  ) {
+    const changed = mutateBlock(lessonId, blockId, (block) => {
+      if (!isListContent(block.content)) {
+        return block;
+      }
+
+      return {
+        ...block,
+        content: { ...block.content, style },
+        updatedAt: nowIso(),
+      };
+    });
+
+    if (changed) {
+      scheduleLessonBlocksSave(lessonId);
+    }
   }
 
   async function handleCreateCourseSubmit(event: SubmitEvent) {
@@ -396,6 +918,12 @@
       lessonErrors = {};
       lessonPending = {};
       moduleError = null;
+      clearAllBlockTimers();
+      blockDirty = {};
+      blockSaving = {};
+      blockErrors = {};
+      blockSuccess = {};
+      lastSelectedLessonId = null;
     } catch (error) {
       createCourseErrors = { general: (error as Error).message };
     } finally {
@@ -776,6 +1304,12 @@
 
       courseStore.removeLesson(moduleId, lessonId);
       lessonErrors = { ...lessonErrors, [moduleId]: undefined };
+      clearBlockTimer(lessonId);
+      clearBlockSuccessTimer(lessonId);
+      setBlockDirtyFlag(lessonId, false);
+      setBlockSavingFlag(lessonId, false);
+      setBlockError(lessonId, null);
+      setBlockSuccessFlag(lessonId, false);
     } catch (error) {
       lessonErrors = { ...lessonErrors, [moduleId]: (error as Error).message };
       if (currentCourse) {
@@ -1082,14 +1616,175 @@
 
       <section class="details" aria-live="polite">
         {#if selectedLesson}
-          <div class="detail-card">
-            <h2>{selectedLesson.title}</h2>
-            <p class="muted">
-              Tillhör modul: {selectedModule?.title ?? 'Okänd modul'} • Position: {selectedLesson.position + 1}
-            </p>
-            <p>
-              Blockredigering kommer här. Nästa steg är att koppla block och autosparning mot backend.
-            </p>
+          <div class="detail-card lesson-detail">
+            <header class="lesson-detail-header">
+              <div>
+                <h2>{selectedLesson.title}</h2>
+                <p class="muted">
+                  Tillhör modul: {selectedModule?.title ?? 'Okänd modul'} • Position: {selectedLesson.position + 1}
+                </p>
+              </div>
+              <div class="lesson-status" data-state={
+                blockSaving[selectedLesson.lessonId]
+                  ? 'saving'
+                  : blockErrors[selectedLesson.lessonId]
+                    ? 'error'
+                    : blockDirty[selectedLesson.lessonId]
+                      ? 'dirty'
+                      : blockSuccess[selectedLesson.lessonId]
+                        ? 'success'
+                        : 'idle'
+              }>
+                {#if blockSaving[selectedLesson.lessonId]}
+                  <span>Sparar block…</span>
+                {:else if blockErrors[selectedLesson.lessonId]}
+                  <span>Fel: {blockErrors[selectedLesson.lessonId]}</span>
+                {:else if blockDirty[selectedLesson.lessonId]}
+                  <span>Ändringar väntar på sparning…</span>
+                {:else if blockSuccess[selectedLesson.lessonId]}
+                  <span>Alla block sparade.</span>
+                {:else}
+                  <span>Blocken är synkroniserade.</span>
+                {/if}
+
+                <button
+                  type="button"
+                  class="ghost small"
+                  onclick={() => triggerImmediateBlockSave(selectedLesson!.lessonId)}
+                  disabled={
+                    Boolean(!blockDirty[selectedLesson.lessonId] && !blockSaving[selectedLesson.lessonId])
+                  }
+                >
+                  Spara nu
+                </button>
+              </div>
+            </header>
+
+            <div class="block-toolbar">
+              <span>Lägg till block:</span>
+              <button type="button" class="ghost" onclick={() => handleAddBlock('text')}>
+                Text
+              </button>
+              <button type="button" class="ghost" onclick={() => handleAddBlock('heading')}>
+                Rubrik
+              </button>
+              <button type="button" class="ghost" onclick={() => handleAddBlock('list')}>
+                Lista
+              </button>
+            </div>
+
+            <div class="block-list" role="list">
+              {#if selectedLesson.blocks.length === 0}
+                <p class="empty">Inga block ännu. Lägg till ett block för att komma igång.</p>
+              {/if}
+
+              {#each selectedLesson.blocks as block, index (block.blockId)}
+                <article class="block-card" data-type={block.type} role="listitem">
+                  <header>
+                    <div class="block-header">
+                      <span class="block-label">Block {index + 1} · {getBlockTypeLabel(block.type)}</span>
+                      <span class="block-meta">Version {block.version}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      class="ghost danger small"
+                      onclick={() => handleDeleteBlock(selectedLesson!.lessonId, block.blockId)}
+                    >
+                      Ta bort
+                    </button>
+                  </header>
+
+                  {#if block.type === 'text'}
+                    <label class="sr-only" for={`block-${block.blockId}-text`}>
+                      Textblock {index + 1}
+                    </label>
+                    <textarea
+                      id={`block-${block.blockId}-text`}
+                      rows="4"
+                      value={isTextContent(block.content) ? block.content.text : ''}
+                      oninput={(event) =>
+                        handleBlockTextChange(
+                          selectedLesson!.lessonId,
+                          block.blockId,
+                          event.currentTarget.value
+                        )
+                      }
+                    ></textarea>
+                  {:else if block.type === 'heading'}
+                    <div class="heading-controls">
+                      <label for={`block-${block.blockId}-level`}>Rubriknivå</label>
+                      <select
+                        id={`block-${block.blockId}-level`}
+                        value={isHeadingContent(block.content) ? block.content.level : 2}
+                        onchange={(event) =>
+                          handleHeadingLevelChange(
+                            selectedLesson!.lessonId,
+                            block.blockId,
+                            Number(event.currentTarget.value)
+                          )
+                        }
+                      >
+                        {#each Array.from({ length: 6 }) as _, levelIndex}
+                          <option value={levelIndex + 1}>H{levelIndex + 1}</option>
+                        {/each}
+                      </select>
+                    </div>
+
+                    <label class="sr-only" for={`block-${block.blockId}-heading`}>
+                      Rubriktext {index + 1}
+                    </label>
+                    <input
+                      id={`block-${block.blockId}-heading`}
+                      type="text"
+                      value={isHeadingContent(block.content) ? block.content.text : ''}
+                      oninput={(event) =>
+                        handleBlockTextChange(
+                          selectedLesson!.lessonId,
+                          block.blockId,
+                          event.currentTarget.value
+                        )
+                      }
+                      placeholder="Rubriktext"
+                    />
+                  {:else}
+                    <div class="heading-controls">
+                      <label for={`block-${block.blockId}-style`}>Listtyp</label>
+                      <select
+                        id={`block-${block.blockId}-style`}
+                        value={isListContent(block.content) ? block.content.style : 'bulleted'}
+                        onchange={(event) =>
+                          handleListStyleChange(
+                            selectedLesson!.lessonId,
+                            block.blockId,
+                            event.currentTarget.value === 'numbered' ? 'numbered' : 'bulleted'
+                          )
+                        }
+                      >
+                        <option value="bulleted">Punktlista</option>
+                        <option value="numbered">Nummerlista</option>
+                      </select>
+                    </div>
+
+                    <label for={`block-${block.blockId}-items`}>
+                      Listpunkter (en per rad)
+                    </label>
+                    <textarea
+                      id={`block-${block.blockId}-items`}
+                      rows="4"
+                      value={isListContent(block.content) ? block.content.items.join('\n') : ''}
+                      oninput={(event) =>
+                        handleListItemsChange(
+                          selectedLesson!.lessonId,
+                          block.blockId,
+                          event.currentTarget.value
+                        )
+                      }
+                    ></textarea>
+                  {/if}
+                </article>
+              {/each}
+            </div>
           </div>
         {:else if selectedModule}
           <div class="detail-card">
@@ -1297,6 +1992,23 @@
   .ghost:focus-visible {
     background: #f1f5f9;
     color: #1f2937;
+  }
+
+  .ghost.small {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.85rem;
+    border-radius: 0.55rem;
+  }
+
+  .ghost.danger {
+    border-color: #fee2e2;
+    color: #b91c1c;
+  }
+
+  .ghost.danger:hover,
+  .ghost.danger:focus-visible {
+    background: #fee2e2;
+    color: #7f1d1d;
   }
 
   .workspace {
@@ -1619,6 +2331,177 @@
 
   .details .detail-card {
     width: 100%;
+  }
+
+  .lesson-detail {
+    gap: 1.5rem;
+  }
+
+  .lesson-detail-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    width: 100%;
+  }
+
+  .lesson-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.75rem;
+    background: #eef2f6;
+    color: #475467;
+    font-size: 0.9rem;
+    flex-wrap: wrap;
+  }
+
+  .lesson-status[data-state='saving'] {
+    background: #f4ebff;
+    color: #6941c6;
+  }
+
+  .lesson-status[data-state='error'] {
+    background: #fee2e2;
+    color: #b91c1c;
+  }
+
+  .lesson-status[data-state='dirty'] {
+    background: #fff7ed;
+    color: #b45309;
+  }
+
+  .lesson-status[data-state='success'] {
+    background: #dcfce7;
+    color: #047857;
+  }
+
+  .lesson-status .ghost {
+    margin-left: auto;
+  }
+
+  .block-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    background: #f8fafc;
+    border: 1px dashed #cbd5f5;
+    border-radius: 0.85rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .block-toolbar span {
+    font-weight: 600;
+    color: #475467;
+  }
+
+  .block-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    width: 100%;
+  }
+
+  .block-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 0.9rem;
+    background: #f9fafb;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .block-card[data-type='heading'] {
+    background: #f8f0ff;
+  }
+
+  .block-card[data-type='list'] {
+    background: #f0f9ff;
+  }
+
+  .block-card header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .block-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .block-label {
+    font-weight: 600;
+    color: #1f2937;
+  }
+
+  .block-meta {
+    font-size: 0.75rem;
+    color: #64748b;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .block-card label {
+    font-weight: 600;
+    color: #475467;
+    font-size: 0.9rem;
+  }
+
+  .block-card textarea,
+  .block-card input,
+  .block-card select {
+    width: 100%;
+    border-radius: 0.65rem;
+    border: 1px solid #d2d6dc;
+    padding: 0.55rem 0.75rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    background: #fff;
+    transition: border 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  }
+
+  .block-card textarea:focus-visible,
+  .block-card input:focus-visible,
+  .block-card select:focus-visible {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+
+  .block-card textarea {
+    min-height: 120px;
+    resize: vertical;
+    line-height: 1.5;
+  }
+
+  .heading-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.35rem;
+  }
+
+  .heading-controls label {
+    margin: 0;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
   }
 
   .empty {
