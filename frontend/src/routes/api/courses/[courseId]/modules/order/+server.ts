@@ -32,15 +32,18 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
   const pool = getPool();
   const client = await pool.connect();
+  let transactionActive = false;
 
   try {
     await ensureDatabase();
     await client.query('BEGIN');
+    transactionActive = true;
 
     const courseExists = await client.query('SELECT 1 FROM courses WHERE course_id = $1', [courseId]);
 
     if (courseExists.rowCount === 0) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(404, 'Course not found');
     }
 
@@ -53,6 +56,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
     if (existingModuleIds.length !== moduleIds.length) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(400, 'moduleIds does not match modules for the course');
     }
 
@@ -60,6 +64,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
     for (const moduleId of moduleIds) {
       if (!existingModuleIdSet.has(moduleId)) {
         await client.query('ROLLBACK');
+        transactionActive = false;
         throw error(400, 'moduleIds must reference modules belonging to the course');
       }
     }
@@ -79,6 +84,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
     );
 
     await client.query('COMMIT');
+    transactionActive = false;
 
     return json({
       courseId,
@@ -89,7 +95,14 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
       })),
     });
   } catch (cause) {
-    await client.query('ROLLBACK');
+    if (transactionActive) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to rollback transaction', rollbackError);
+      }
+      transactionActive = false;
+    }
 
     if (cause instanceof Response) {
       throw cause;

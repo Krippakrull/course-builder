@@ -22,15 +22,18 @@ export async function POST({ params, request }: Parameters<import('@sveltejs/kit
 
   const pool = getPool();
   const client = await pool.connect();
+  let transactionActive = false;
 
   try {
     await ensureDatabase();
     await client.query('BEGIN');
+    transactionActive = true;
 
     const courseExists = await client.query('SELECT 1 FROM courses WHERE course_id = $1', [courseId]);
 
     if (courseExists.rowCount === 0) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(404, 'Course not found');
     }
 
@@ -53,6 +56,7 @@ export async function POST({ params, request }: Parameters<import('@sveltejs/kit
     await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
 
     await client.query('COMMIT');
+    transactionActive = false;
 
     const module = insertedModule.rows[0];
 
@@ -66,7 +70,14 @@ export async function POST({ params, request }: Parameters<import('@sveltejs/kit
       { status: 201 }
     );
   } catch (cause) {
-    await client.query('ROLLBACK');
+    if (transactionActive) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to rollback transaction', rollbackError);
+      }
+      transactionActive = false;
+    }
 
     if (cause instanceof Response) {
       throw cause;

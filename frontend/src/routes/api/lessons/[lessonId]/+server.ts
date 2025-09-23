@@ -14,10 +14,12 @@ export async function DELETE({ params }: Parameters<import('@sveltejs/kit').Requ
 
   const pool = getPool();
   const client = await pool.connect();
+  let transactionActive = false;
 
   try {
     await ensureDatabase();
     await client.query('BEGIN');
+    transactionActive = true;
 
     const lessonResult = await client.query<{ module_id: string }>(
       'SELECT module_id FROM lessons WHERE lesson_id = $1',
@@ -28,6 +30,7 @@ export async function DELETE({ params }: Parameters<import('@sveltejs/kit').Requ
 
     if (!lessonRow) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(404, 'Lesson not found');
     }
 
@@ -42,6 +45,7 @@ export async function DELETE({ params }: Parameters<import('@sveltejs/kit').Requ
 
     if (!moduleRow) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(404, 'Module not found for lesson');
     }
 
@@ -65,10 +69,18 @@ export async function DELETE({ params }: Parameters<import('@sveltejs/kit').Requ
     await client.query('UPDATE courses SET updated_at = NOW() WHERE course_id = $1', [courseId]);
 
     await client.query('COMMIT');
+    transactionActive = false;
 
     return new Response(null, { status: 204 });
   } catch (cause) {
-    await client.query('ROLLBACK');
+    if (transactionActive) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to rollback transaction', rollbackError);
+      }
+      transactionActive = false;
+    }
 
     if (cause instanceof Response) {
       throw cause;

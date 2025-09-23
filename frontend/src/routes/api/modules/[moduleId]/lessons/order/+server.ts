@@ -32,10 +32,12 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
   const pool = getPool();
   const client = await pool.connect();
+  let transactionActive = false;
 
   try {
     await ensureDatabase();
     await client.query('BEGIN');
+    transactionActive = true;
 
     const moduleResult = await client.query<{ course_id: string }>(
       'SELECT course_id FROM modules WHERE module_id = $1',
@@ -45,6 +47,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
     const moduleRow = moduleResult.rows[0];
     if (!moduleRow) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(404, 'Module not found');
     }
 
@@ -57,6 +60,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
     if (existingLessons.rows.length !== lessonIds.length) {
       await client.query('ROLLBACK');
+      transactionActive = false;
       throw error(400, 'lessonIds does not match lessons belonging to the specified module');
     }
 
@@ -64,6 +68,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
     for (const lessonId of lessonIds) {
       if (!lessonIdSet.has(lessonId)) {
         await client.query('ROLLBACK');
+        transactionActive = false;
         throw error(400, 'lessonIds must reference lessons belonging to the module');
       }
     }
@@ -84,6 +89,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
     );
 
     await client.query('COMMIT');
+    transactionActive = false;
 
     return json({
       moduleId,
@@ -94,7 +100,14 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
       })),
     });
   } catch (cause) {
-    await client.query('ROLLBACK');
+    if (transactionActive) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to rollback transaction', rollbackError);
+      }
+      transactionActive = false;
+    }
 
     if (cause instanceof Response) {
       throw cause;
