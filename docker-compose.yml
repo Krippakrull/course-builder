@@ -12,37 +12,20 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
 
-  backend:
+  app:
     image: node:20-alpine
-    container_name: course_builder_backend
-    working_dir: /app
-    command: sh -c "npm install && npm run dev"
-    ports:
-      - "3001:3001"
-    environment:
-      NODE_ENV: development
-      PORT: 3001
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/course_builder
-      CORS_ORIGINS: http://localhost:5173
-    volumes:
-      - ./backend:/app
-    depends_on:
-      - db
-
-  frontend:
-    image: node:20-alpine
-    container_name: course_builder_frontend
+    container_name: course_builder_app
     working_dir: /app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
       - "5173:5173"
     environment:
       NODE_ENV: development
-      PUBLIC_BACKEND_URL: http://localhost:3001
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/course_builder
     volumes:
       - ./frontend:/app
     depends_on:
-      - backend
+      - db
 
 volumes:
   db_data:
