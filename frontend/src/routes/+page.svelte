@@ -1,10 +1,10 @@
 <svelte:options runes={true} />
 
 <script lang="ts">
-  import { env } from '$env/dynamic/public';
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { courseStore } from '$lib';
+  import type { PageData } from './$types';
   import type {
     Course,
     CourseStoreState,
@@ -13,7 +13,8 @@
     Module,
   } from '$lib';
 
-  const backendUrl = env.PUBLIC_BACKEND_URL || 'http://localhost:3001';
+  const { data } = $props<{ data: PageData }>();
+  const apiBase = '/api';
   const LAST_COURSE_STORAGE_KEY = 'course-builder:lastCourseId';
 
   type CreateCourseForm = {
@@ -92,10 +93,16 @@
     });
 
     (async () => {
+      if (!data.databaseConfigured) {
+        backendStatus = 'error';
+        backendMessage = 'Databasen är inte konfigurerad på servern.';
+        return;
+      }
+
       backendStatus = 'loading';
 
       try {
-        const response = await fetch(`${backendUrl}/health`);
+        const response = await fetch(`${apiBase}/health`);
         const data = (await response.json().catch(() => null)) as
           | { status?: string; database?: string; timestamp?: string }
           | null;
@@ -139,7 +146,7 @@
     initialLoadError = null;
 
     try {
-      const response = await fetch(`${backendUrl}/courses/${courseId}`);
+      const response = await fetch(`${apiBase}/courses/${courseId}`);
       const text = await response.text();
       const payload = text ? (JSON.parse(text) as unknown) : null;
 
@@ -357,7 +364,7 @@
     createCourseErrors = {};
 
     try {
-      const response = await fetch(`${backendUrl}/courses`, {
+      const response = await fetch(`${apiBase}/courses`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -422,7 +429,7 @@
       moduleError = null;
 
       try {
-        const response = await fetch(`${backendUrl}/courses/${currentCourse.courseId}/modules`, {
+        const response = await fetch(`${apiBase}/courses/${currentCourse.courseId}/modules`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -463,7 +470,7 @@
       lessonErrors = { ...lessonErrors, [moduleId]: undefined };
 
       try {
-        const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons`, {
+        const response = await fetch(`${apiBase}/modules/${moduleId}/lessons`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -502,7 +509,7 @@
     moduleError = null;
 
     try {
-      const response = await fetch(`${backendUrl}/courses/${currentCourse.courseId}/modules/order`, {
+      const response = await fetch(`${apiBase}/courses/${currentCourse.courseId}/modules/order`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -622,7 +629,7 @@
     moduleError = null;
 
     try {
-      const response = await fetch(`${backendUrl}/modules/${moduleId}`, {
+      const response = await fetch(`${apiBase}/modules/${moduleId}`, {
         method: 'DELETE',
       });
 
@@ -752,7 +759,7 @@
     lessonErrors = { ...lessonErrors, [moduleId]: undefined };
 
     try {
-      const response = await fetch(`${backendUrl}/lessons/${lessonId}`, {
+      const response = await fetch(`${apiBase}/lessons/${lessonId}`, {
         method: 'DELETE',
       });
 
@@ -794,7 +801,7 @@
     lessonErrors = { ...lessonErrors, [moduleId]: undefined };
 
     try {
-      const response = await fetch(`${backendUrl}/modules/${moduleId}/lessons/order`, {
+      const response = await fetch(`${apiBase}/modules/${moduleId}/lessons/order`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',

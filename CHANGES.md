@@ -49,3 +49,11 @@
 - Säkerställde att Svelte-check passerar utan varningar genom att justera typinferenser och event-hantering enligt Svelte 5:s riktlinjer.
 
 **Nästa steg:** Fortsätt US-M1-03 genom att bygga backend-endpointen för block (`PATCH /lessons/:id/blocks`) och introducera blocklistan i frontend med autosparningsstöd.
+
+## 2025-09-25
+
+- Avvecklade den separata Express-backenden och flyttade databaslogiken till SvelteKits serverfunktionalitet med Postgres-anslutning i `src/lib/server`.
+- Återskapade samtliga tidigare API-endpoints som SvelteKit-rutter under `/api` och uppdaterade Svelte-vyn att anropa dem via samma ursprung.
+- Uppdaterade dokumentation, miljövariabler och Docker-konfigurationen för att spegla den nya enhetliga applikationen.
+
+**Nästa steg:** Fortsätt US-M1-03 i den nya strukturen genom att bygga block-endpointen direkt i SvelteKit (`PATCH /lessons/:lessonId/blocks`) och koppla på blocklistan med autosparning i UI:t.
