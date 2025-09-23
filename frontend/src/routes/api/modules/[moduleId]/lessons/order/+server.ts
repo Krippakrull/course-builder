@@ -64,7 +64,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
       throw error(400, 'lessonIds does not match lessons belonging to the specified module');
     }
 
-    const lessonIdSet = new Set(existingLessons.rows.map((row) => row.lesson_id));
+    const lessonIdSet = new Set(existingLessons.rows.map((row: { lesson_id: string }) => row.lesson_id));
     for (const lessonId of lessonIds) {
       if (!lessonIdSet.has(lessonId)) {
         await client.query('ROLLBACK');
@@ -93,7 +93,7 @@ export async function PATCH({ params, request }: Parameters<import('@sveltejs/ki
 
     return json({
       moduleId,
-      lessons: orderedLessons.rows.map((row) => ({
+      lessons: orderedLessons.rows.map((row: { lesson_id: string; title: string; position: number }) => ({
         lessonId: row.lesson_id,
         title: row.title,
         position: Number(row.position ?? 0),
